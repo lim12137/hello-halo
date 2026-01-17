@@ -326,6 +326,70 @@ describe('Response Converters', () => {
         expect(result.stop_reason).toBe(expected)
       }
     })
+
+    it('should patch DeepSeek tool call interruption bug ONLY when isDeepSeek: true', () => {
+      const response: any = {
+        id: 'chatcmpl-123',
+        object: 'chat.completion',
+        created: 1677652288,
+        model: 'deepseek-chat',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call_123',
+              type: 'function',
+              function: { name: 'get_weather', arguments: '{}' }
+            }]
+          },
+          finish_reason: 'stop' // DeepSeek bug: returns 'stop' instead of 'tool_calls'
+        }]
+      }
+
+      // Case 1: Without flag (isDeepSeek: false/undefined) - Should behave "wrong" (standard mapping)
+      const resultStandard = convertOpenAIChatToAnthropic(response)
+      expect(resultStandard.stop_reason).toBe('end_turn') // Maps 'stop' -> 'end_turn'
+
+      // Case 2: With flag (isDeepSeek: true) - Should apply patch
+      const resultPatched = convertOpenAIChatToAnthropic(response, undefined, { isDeepSeek: true })
+      expect(resultPatched.stop_reason).toBe('tool_use') // Patched to 'tool_use'
+    })
+
+    it('should verify isDeepSeek flag is model-name-based', () => {
+      // This test documents the expected behavior:
+      // - GN provider + "deepseek-chat" model -> isDeepSeek: true
+      // - GN provider + "qwen3-72b" model -> isDeepSeek: false
+
+      // The actual isDeepSeek logic is in agent.service.ts, not in converters.
+      // Converters just receive the flag and apply the patch.
+      // This test verifies the converter respects the flag correctly.
+
+      const responseWithToolCalls = {
+        id: 'test',
+        object: 'chat.completion',
+        created: Date.now(),
+        model: 'qwen3-72b',  // Non-DeepSeek model
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{ id: 't1', type: 'function', function: { name: 'test', arguments: '{}' } }]
+          },
+          finish_reason: 'stop'  // Bug: should be 'tool_calls'
+        }]
+      }
+
+      // When isDeepSeek is false (for Qwen3), patch should NOT be applied
+      const resultNoPatch = convertOpenAIChatToAnthropic(responseWithToolCalls as any, undefined, { isDeepSeek: false })
+      expect(resultNoPatch.stop_reason).toBe('end_turn')  // Standard mapping, no patch
+
+      // When isDeepSeek is true, patch should be applied
+      const resultWithPatch = convertOpenAIChatToAnthropic(responseWithToolCalls as any, undefined, { isDeepSeek: true })
+      expect(resultWithPatch.stop_reason).toBe('tool_use')  // Patched
+    })
   })
 
   describe('convertOpenAIResponsesToAnthropic', () => {

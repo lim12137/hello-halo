@@ -295,7 +295,9 @@ export function SettingsPage() {
                 <h2 className="text-lg font-medium">
                   {provider === 'anthropic'
                     ? t('Claude (Recommended)')
-                    : t('OpenAI Compatible')}
+                    : provider === 'gn'
+                      ? t('GN (DeepSeek)')
+                      : t('OpenAI Compatible')}
                 </h2>
                 <p className="text-xs text-muted-foreground">{t('AI Connection Configuration')}</p>
               </div>
@@ -321,12 +323,16 @@ export function SettingsPage() {
                     } else if (next === 'openai') {
                       if (!apiUrl || apiUrl.includes('anthropic')) setApiUrl('https://api.openai.com')
                       if (!model || model.startsWith('claude-')) setModel('gpt-4o-mini')
+                    } else if (next === 'gn') {
+                      if (!apiUrl || apiUrl.includes('anthropic')) setApiUrl('https://api.deepseek.com')
+                      if (!model || model.startsWith('claude-')) setModel('deepseek-chat')
                     }
                   }}
                   className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
                 >
                   <option value="anthropic">{t('Claude (Recommended)')}</option>
                   <option value="openai">{t('OpenAI Compatible')}</option>
+                  <option value="gn">{t('GN (DeepSeek)')}</option>
                 </select>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {provider === 'openai'

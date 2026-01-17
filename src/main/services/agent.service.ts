@@ -61,6 +61,15 @@ import {
 let headlessElectronPath: string | null = null
 
 /**
+ * Check if model name indicates DeepSeek (case-insensitive)
+ * Used to trigger DeepSeek-specific fixes (finish_reason patch)
+ */
+function isDeepSeekModel(modelName?: string): boolean {
+  if (!modelName) return false
+  return modelName.toLowerCase().includes('deepseek')
+}
+
+/**
  * Get the path to the headless Electron binary.
  *
  * On macOS, when spawning Electron as a child process with ELECTRON_RUN_AS_NODE=1,
@@ -465,8 +474,7 @@ export async function ensureSessionWarm(
   let anthropicBaseUrl = config.api.apiUrl
   let anthropicApiKey = config.api.apiKey
   let sdkModel = config.api.model || 'claude-opus-4-5-20251101'
-  if (config.api.provider === 'openai') {
-
+  if (config.api.provider === 'openai' || config.api.provider === 'gn') {
     const router = await ensureOpenAICompatRouter({ debug: false })
     anthropicBaseUrl = router.baseUrl
     const apiType = inferOpenAIWireApi(config.api.apiUrl)
@@ -474,11 +482,13 @@ export async function ensureSessionWarm(
       url: config.api.apiUrl,
       key: config.api.apiKey,
       model: config.api.model,  // Real model passed to Router
+      isDeepSeek: config.api.provider === 'gn' && isDeepSeekModel(config.api.model),
       ...(apiType ? { apiType } : {})
     })
     // Pass a fake Claude model to CC for normal request handling
     sdkModel = 'claude-sonnet-4-20250514'
-    console.log(`[Agent] OpenAI provider enabled (warm): routing via ${anthropicBaseUrl}`)
+    const isDeepSeek = config.api.provider === 'gn' && isDeepSeekModel(config.api.model)
+    console.log(`[Agent] ${config.api.provider === 'gn' ? `GN (${isDeepSeek ? 'DeepSeek patch enabled' : 'standard'})` : 'OpenAI'} provider enabled (warm): routing via ${anthropicBaseUrl}`)
   }
 
   const sdkOptions: Record<string, any> = {
@@ -606,7 +616,7 @@ let currentMainWindow: BrowserWindow | null = null
 // Get working directory for a space
 function getWorkingDir(spaceId: string): string {
   console.log(`[Agent] getWorkingDir called with spaceId: ${spaceId}`)
-  
+
   if (spaceId === 'halo-temp') {
     const artifactsDir = join(getTempSpacePath(), 'artifacts')
     if (!existsSync(artifactsDir)) {
@@ -618,7 +628,7 @@ function getWorkingDir(spaceId: string): string {
 
   const space = getSpace(spaceId)
   console.log(`[Agent] getSpace result:`, space ? { id: space.id, name: space.name, path: space.path } : null)
-  
+
   if (space) {
     console.log(`[Agent] Using space path: ${space.path}`)
     return space.path
@@ -958,14 +968,14 @@ export function handleToolApproval(conversationId: string, approved: boolean): v
 }
 
 // Build multi-modal message content for Claude API
-function buildMessageContent(text: string, images?: ImageAttachment[]): string | Array<{ type: string; [key: string]: unknown }> {
+function buildMessageContent(text: string, images?: ImageAttachment[]): string | Array<{ type: string;[key: string]: unknown }> {
   // If no images, just return plain text
   if (!images || images.length === 0) {
     return text
   }
 
   // Build content blocks array for multi-modal message
-  const contentBlocks: Array<{ type: string; [key: string]: unknown }> = []
+  const contentBlocks: Array<{ type: string;[key: string]: unknown }> = []
 
   // Add text block first (if there's text)
   if (text.trim()) {
@@ -1010,7 +1020,7 @@ export async function sendMessage(
   let anthropicBaseUrl = config.api.apiUrl
   let anthropicApiKey = config.api.apiKey
   let sdkModel = config.api.model || 'claude-opus-4-5-20251101'
-  if (config.api.provider === 'openai') {
+  if (config.api.provider === 'openai' || config.api.provider === 'gn') {
     const router = await ensureOpenAICompatRouter({ debug: false })
     anthropicBaseUrl = router.baseUrl
     const apiType = inferOpenAIWireApi(config.api.apiUrl)
@@ -1018,6 +1028,7 @@ export async function sendMessage(
       url: config.api.apiUrl,
       key: config.api.apiKey,
       model: config.api.model,  // Real model passed to Router
+      isDeepSeek: config.api.provider === 'gn' && isDeepSeekModel(config.api.model),
       ...(apiType ? { apiType } : {})
     })
     // Pass a fake Claude model to CC for normal request handling
@@ -1301,10 +1312,10 @@ export async function sendMessage(
       console.log(`[Agent][${conversationId}] 🔵 +${elapsed}ms ${sdkMessage.type}:`,
         sdkMessage.type === 'assistant'
           ? JSON.stringify(
-              Array.isArray((sdkMessage as any).message?.content)
-                ? (sdkMessage as any).message.content.map((b: any) => ({ type: b.type, id: b.id, name: b.name, textLen: b.text?.length, thinkingLen: b.thinking?.length }))
-                : (sdkMessage as any).message?.content
-            )
+            Array.isArray((sdkMessage as any).message?.content)
+              ? (sdkMessage as any).message.content.map((b: any) => ({ type: b.type, id: b.id, name: b.name, textLen: b.text?.length, thinkingLen: b.thinking?.length }))
+              : (sdkMessage as any).message?.content
+          )
           : sdkMessage.type === 'user'
             ? `tool_result or input`
             : ''
@@ -1528,11 +1539,11 @@ export async function sendMessage(
     // Windows: Check for Git Bash related errors
     if (process.platform === 'win32') {
       const isExitCode1 = errorMessage.includes('exited with code 1') ||
-                          errorMessage.includes('process exited') ||
-                          errorMessage.includes('spawn ENOENT')
+        errorMessage.includes('process exited') ||
+        errorMessage.includes('spawn ENOENT')
       const isBashError = stderrBuffer?.includes('bash') ||
-                          stderrBuffer?.includes('ENOENT') ||
-                          errorMessage.includes('ENOENT')
+        stderrBuffer?.includes('ENOENT') ||
+        errorMessage.includes('ENOENT')
 
       if (isExitCode1 || isBashError) {
         // Check if Git Bash is properly configured
@@ -1544,7 +1555,7 @@ export async function sendMessage(
         } else {
           // Git Bash found but still got error - could be path issue
           errorMessage = 'Command execution failed. This may be an environment configuration issue, please try restarting the app.\n\n' +
-                        `Technical details: ${err.message}`
+            `Technical details: ${err.message}`
         }
       }
     }
