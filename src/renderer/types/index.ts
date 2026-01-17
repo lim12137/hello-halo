@@ -3,7 +3,27 @@
 // ============================================
 
 // API Provider Configuration
-export type ApiProvider = 'anthropic' | 'openai';
+export type ApiProvider = 'anthropic' | 'openai' | 'gn' | 'custom';
+
+// Global types for window extensions
+declare global {
+  interface Window {
+    halo: any;
+    platform: {
+      platform: 'darwin' | 'win32' | 'linux';
+      isMac: boolean;
+      isWindows: boolean;
+      isLinux: boolean;
+    };
+    electron?: {
+      ipcRenderer: {
+        on: (channel: string, callback: (...args: unknown[]) => void) => void;
+        removeListener: (channel: string, callback: (...args: unknown[]) => void) => void;
+        send: (channel: string, ...args: unknown[]) => void;
+      };
+    };
+  }
+}
 
 // Available Claude models
 export interface ModelOption {

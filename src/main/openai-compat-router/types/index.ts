@@ -30,6 +30,7 @@ export interface BackendConfig {
   url: string
   key: string
   model?: string
+  isDeepSeek?: boolean
 }
 
 /**
