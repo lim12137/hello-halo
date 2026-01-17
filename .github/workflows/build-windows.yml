@@ -47,7 +47,7 @@ jobs:
 
       - name: Package Windows EXE
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN_RELEASE }}
         run: |
           if ("${{ github.event_name }}" -eq "push" -or "${{ github.event.inputs.publish }}" -eq "true") {
             npx electron-builder --win --x64 --publish always
