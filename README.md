@@ -180,6 +180,8 @@ npm run dev
 - **No Backend Required** — Pure desktop client, use your own API keys
 - **Real Agent Loop** — Tool execution, not just text generation
 
+> **Powered by [Claude Code](https://github.com/anthropics/claude-code)** — Thanks to Anthropic for building the most capable AI agent.
+
 ---
 
 ## What People Are Building
@@ -192,21 +194,6 @@ Halo isn't just for developers. We've seen:
 - **Developers** shipping features faster than ever
 
 The barrier isn't AI capability anymore. **It's accessibility.** Halo removes that barrier.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Framework | Electron + electron-vite |
-| Frontend | React 18 + TypeScript |
-| Styling | Tailwind CSS + shadcn/ui patterns |
-| State | Zustand |
-| Agent Core | @anthropic-ai/claude-code SDK |
-| Markdown | react-markdown + highlight.js |
-
-> **Powered by [Claude Code](https://github.com/anthropics/claude-code)** — Thanks to Anthropic for building the most capable AI agent.
 
 ---
 
