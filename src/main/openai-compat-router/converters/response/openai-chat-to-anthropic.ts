@@ -163,8 +163,7 @@ export function createAnthropicErrorResponse(message: string): AnthropicMessageR
  */
 export function convertOpenAIChatToAnthropic(
   openaiResponse: OpenAIChatResponse,
-  requestModel?: string,
-  options?: { isDeepSeek?: boolean }
+  requestModel?: string
 ): AnthropicMessageResponse {
   if (!openaiResponse) {
     return createAnthropicErrorResponse('Empty response from provider')
@@ -195,9 +194,8 @@ export function convertOpenAIChatToAnthropic(
   }
 
   // Convert tool calls
-  const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
-  if (hasToolCalls) {
-    for (const toolCall of message.tool_calls!) {
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    for (const toolCall of message.tool_calls) {
       if (!toolCall?.function) continue
       content.push(openAIChatToolCallToAnthropicToolUse(toolCall))
     }
@@ -210,13 +208,7 @@ export function convertOpenAIChatToAnthropic(
   }
 
   // Map stop reason
-  let stopReason = mapFinishReasonToStopReason(choice.finish_reason)
-
-  // DeepSeek Patch: Fix "stop" finish_reason when tool calls are present
-  // DeepSeek V3/R1 incorrectly returns "stop" instead of "tool_calls"
-  if (options?.isDeepSeek && choice.finish_reason === 'stop' && hasToolCalls) {
-    stopReason = 'tool_use'
-  }
+  const stopReason = mapFinishReasonToStopReason(choice.finish_reason)
 
   return {
     id: openaiResponse.id,

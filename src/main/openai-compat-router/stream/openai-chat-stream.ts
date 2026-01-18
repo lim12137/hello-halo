@@ -135,13 +135,7 @@ export class OpenAIChatStreamHandler extends BaseStreamHandler {
 
     // Process finish reason
     if (choice.finish_reason) {
-      let stopReason = OPENAI_CHAT_STOP_REASON_MAP[choice.finish_reason] || 'end_turn'
-
-      // DeepSeek Patch: Fix "stop" finish_reason when tool calls were present in stream
-      if (this.isDeepSeek && choice.finish_reason === 'stop' && this.toolIndexToBlock.size > 0) {
-        stopReason = 'tool_use'
-      }
-
+      const stopReason = OPENAI_CHAT_STOP_REASON_MAP[choice.finish_reason] || 'end_turn'
       this.setStopReason(stopReason)
       this.markFinished()
     }
@@ -267,9 +261,8 @@ export async function streamOpenAIChatToAnthropic(
   stream: unknown,
   res: ExpressResponse,
   model?: string,
-  debug = false,
-  options: { isDeepSeek?: boolean } = {}
+  debug = false
 ): Promise<void> {
-  const handler = new OpenAIChatStreamHandler(res, { model, debug, isDeepSeek: options.isDeepSeek })
+  const handler = new OpenAIChatStreamHandler(res, { model, debug })
   await handler.processStream(stream)
 }

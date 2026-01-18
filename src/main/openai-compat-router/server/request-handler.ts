@@ -172,7 +172,7 @@ export async function handleMessagesRequest(
         if (apiType === 'responses') {
           await streamOpenAIResponsesToAnthropic(upstreamResp.body, res, anthropicRequest.model, debug)
         } else {
-          await streamOpenAIChatToAnthropic(upstreamResp.body, res, anthropicRequest.model, debug, { isDeepSeek: config.isDeepSeek })
+          await streamOpenAIChatToAnthropic(upstreamResp.body, res, anthropicRequest.model, debug)
         }
         return
       }
@@ -181,7 +181,7 @@ export async function handleMessagesRequest(
       const openaiResponse = await upstreamResp.json()
       const anthropicResponse = apiType === 'responses'
         ? convertOpenAIResponsesToAnthropic(openaiResponse)
-        : convertOpenAIChatToAnthropic(openaiResponse, anthropicRequest.model, { isDeepSeek: config.isDeepSeek })
+        : convertOpenAIChatToAnthropic(openaiResponse, anthropicRequest.model)
 
       res.json(anthropicResponse)
     } catch (error: any) {

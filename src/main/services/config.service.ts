@@ -39,7 +39,7 @@ export function onApiConfigChange(handler: ApiConfigChangeHandler): () => void {
 // Types (shared with renderer)
 interface HaloConfig {
   api: {
-    provider: 'anthropic' | 'openai' | 'custom' | 'gn'
+    provider: 'anthropic' | 'openai' | 'custom'
     apiKey: string
     apiUrl: string
     model: string
@@ -306,7 +306,7 @@ export async function validateApiConnection(
     }
 
     // OpenAI compatible validation: GET /v1/models (does not depend on user-selected model)
-    if (provider === 'openai' || provider === 'gn') {
+    if (provider === 'openai') {
       const baseV1 = normalizeOpenAIV1Base(apiUrl)
       const modelsUrl = `${baseV1}/models`
 

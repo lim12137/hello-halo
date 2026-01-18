@@ -16,8 +16,6 @@ Experience the full power of an AI Agent without touching the terminal. Halo bri
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Web-lightgrey.svg)](#installation)
 [![Downloads](https://img.shields.io/github/downloads/openkursar/hello-halo/total.svg)](https://github.com/openkursar/hello-halo/releases)
-[![Build Windows EXE](https://github.com/openkursar/hello-halo/actions/workflows/build-windows.yml/badge.svg)](https://github.com/openkursar/hello-halo/actions/workflows/build-windows.yml)
-
 
 [Download](#installation) · [Documentation](#documentation) · [Contributing](#contributing)
 

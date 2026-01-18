@@ -62,14 +62,12 @@ export function createInitialState(model: string): StreamState {
 export interface StreamHandlerOptions {
   model?: string
   debug?: boolean
-  isDeepSeek?: boolean
 }
 
 export abstract class BaseStreamHandler {
   protected writer: SSEWriter
   protected state: StreamState
   protected debug: boolean
-  protected isDeepSeek: boolean
 
   // Tool call tracking
   protected toolCallMap = new Map<number, StreamToolCallState>()
@@ -79,7 +77,6 @@ export abstract class BaseStreamHandler {
     this.writer = new SSEWriter(res, { debug: options.debug })
     this.state = createInitialState(options.model || 'unknown')
     this.debug = options.debug ?? false
-    this.isDeepSeek = options.isDeepSeek ?? false
   }
 
   /**

@@ -1,6 +1,6 @@
 {
   "name": "halo",
-  "version": "1.2.4",
+  "version": "1.2.3",
   "description": "AI that gets things done",
   "type": "module",
   "main": "./out/main/index.mjs",
@@ -93,7 +93,9 @@
   "build": {
     "appId": "com.halo.app",
     "productName": "Halo",
-    "releaseInfo": {},
+    "releaseInfo": {
+      "releaseNotesFile": ".release-notes-current.md"
+    },
     "afterPack": "./scripts/afterPack.cjs",
     "directories": {
       "buildResources": "resources"
