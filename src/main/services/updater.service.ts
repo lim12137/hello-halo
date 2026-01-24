@@ -1,10 +1,20 @@
 /**
  * Halo Auto-Updater Service
  * Handles automatic updates via GitHub Releases
+ *
+ * Update Strategy:
+ * - Startup check: 5 seconds after app launch
+ * - Periodic check: Every hour via setInterval
+ * - Resume check: When system wakes from sleep
+ * - Manual check: User-triggered from Settings or menu (notify only, no auto-download)
+ *
+ * Platform Behavior:
+ * - macOS: Never auto-download (no code signing), always show manual download option
+ * - Windows/Linux: Auto-download in background, notify when ready to install
  */
 
 // Node/Electron imports
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, ipcMain, powerMonitor } from 'electron'
 
 // Third-party imports
 import electronUpdater from 'electron-updater'
@@ -24,6 +34,28 @@ type UpdateInfo = electronUpdater.UpdateInfo
 /** Delay before quitAndInstall to ensure windows close properly (ms) */
 const QUIT_AND_INSTALL_DELAY_MS = 300
 
+/** Delay before first update check after startup (ms) */
+const STARTUP_CHECK_DELAY_MS = 5000
+
+/** Interval between periodic update checks (ms) - 1 hour */
+const CHECK_INTERVAL_MS = 60 * 60 * 1000
+
+/** Delay after system resume before checking for updates (ms) */
+const RESUME_CHECK_DELAY_MS = 3000
+
+// ============================================================================
+// State
+// ============================================================================
+
+/** Track if we're in manual check mode (no auto-download) */
+let isManualCheck = false
+
+/** Track last check time to avoid duplicate checks */
+let lastCheckTime = 0
+
+/** Minimum interval between checks (5 minutes) to prevent spam */
+const MIN_CHECK_INTERVAL_MS = 5 * 60 * 1000
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -31,21 +63,25 @@ const QUIT_AND_INSTALL_DELAY_MS = 300
 // Configure logging
 autoUpdater.logger = console
 
-// Auto download updates
-autoUpdater.autoDownload = true
-autoUpdater.autoInstallOnAppQuit = true
-
-// Disable code signing verification for ad-hoc signed apps (no Apple Developer certificate)
-// This allows updates to work without purchasing an Apple Developer account
+// Platform-specific auto-download configuration
+// macOS: Disable auto-download (no code signing, download is useless)
+// Windows/Linux: Enable auto-download for seamless updates
 if (process.platform === 'darwin') {
+  autoUpdater.autoDownload = false
   autoUpdater.forceDevUpdateConfig = true
+} else {
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
 }
 
+// ============================================================================
+// Event Handlers
+// ============================================================================
+
 /**
- * Initialize auto-updater
+ * Initialize auto-updater event handlers and periodic checks
  */
 export function initAutoUpdater(): void {
-
   // Skip updates in development
   if (is.dev) {
     console.log('[Updater] Skipping auto-update in development mode')
@@ -61,16 +97,16 @@ export function initAutoUpdater(): void {
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     console.log('[Updater] Update available:', info.version)
 
-    // On macOS without code signing, skip auto-download and show manual download option
-    if (process.platform === 'darwin') {
-      console.log('[Updater] macOS: Skipping auto-download, showing manual download option')
+    // Manual check or macOS: Always show manual download option (no auto-download)
+    if (isManualCheck || process.platform === 'darwin') {
+      console.log('[Updater] Showing manual download option')
       sendUpdateStatus('manual-download', {
         version: info.version,
         releaseDate: info.releaseDate,
         releaseNotes: info.releaseNotes
       })
     } else {
-      // Windows/Linux: Proceed with auto-download
+      // Windows/Linux background check: Proceed with auto-download
       sendUpdateStatus('available', {
         version: info.version,
         releaseDate: info.releaseDate,
@@ -104,18 +140,37 @@ export function initAutoUpdater(): void {
 
   autoUpdater.on('error', (error) => {
     console.error('[Updater] Error:', error.message)
-    // On auto-download failure, show manual download option instead of error
-    // User won't see "failed", just "version available for manual download"
-    sendUpdateStatus('manual-download', {
-      message: 'Version available for manual download'
-    })
+    sendUpdateStatus('error', { message: error.message })
   })
 
-  // Check for updates on startup (with delay to not block app launch)
+  // ========================================
+  // Update Check Scheduling
+  // ========================================
+
+  // 1. Startup check (with delay to not block app launch)
   setTimeout(() => {
-    checkForUpdates()
-  }, 5000)
+    autoCheckForUpdates()
+  }, STARTUP_CHECK_DELAY_MS)
+
+  // 2. Periodic check (every hour)
+  setInterval(() => {
+    autoCheckForUpdates()
+  }, CHECK_INTERVAL_MS)
+
+  // 3. Resume check (when system wakes from sleep)
+  powerMonitor.on('resume', () => {
+    console.log('[Updater] System resumed from sleep, scheduling update check')
+    setTimeout(() => {
+      autoCheckForUpdates()
+    }, RESUME_CHECK_DELAY_MS)
+  })
+
+  console.log('[Updater] Initialized with periodic check interval:', CHECK_INTERVAL_MS / 1000 / 60, 'minutes')
 }
+
+// ============================================================================
+// Update Check Functions
+// ============================================================================
 
 /**
  * Send update status to renderer
@@ -131,20 +186,83 @@ function sendUpdateStatus(
 }
 
 /**
- * Check for updates
+ * Check if enough time has passed since last check
  */
-export async function checkForUpdates(): Promise<void> {
+function canCheck(): boolean {
+  const now = Date.now()
+  if (now - lastCheckTime < MIN_CHECK_INTERVAL_MS) {
+    console.log('[Updater] Skipping check, too soon since last check')
+    return false
+  }
+  lastCheckTime = now
+  return true
+}
+
+/**
+ * Automatic background check for updates
+ * - Windows/Linux: Will auto-download if update available
+ * - macOS: Will show manual download option
+ */
+export async function autoCheckForUpdates(): Promise<void> {
   if (is.dev) {
     console.log('[Updater] Skipping update check in development mode')
     return
   }
 
+  if (!canCheck()) {
+    return
+  }
+
   try {
+    isManualCheck = false
     await autoUpdater.checkForUpdates()
   } catch (error) {
     console.error('[Updater] Failed to check for updates:', error)
   }
 }
+
+/**
+ * Manual check for updates (user-triggered)
+ * - Never auto-downloads, only notifies user of available updates
+ * - User can then choose to download/install
+ */
+export async function manualCheckForUpdates(): Promise<void> {
+  if (is.dev) {
+    console.log('[Updater] Skipping update check in development mode')
+    sendUpdateStatus('not-available', { version: app.getVersion() })
+    return
+  }
+
+  // Manual check bypasses the time throttle
+  lastCheckTime = Date.now()
+
+  // Save original autoDownload setting and disable it for manual check
+  const originalAutoDownload = autoUpdater.autoDownload
+  try {
+    isManualCheck = true
+    autoUpdater.autoDownload = false
+    await autoUpdater.checkForUpdates()
+  } catch (error) {
+    console.error('[Updater] Failed to check for updates:', error)
+    sendUpdateStatus('error', { message: 'Failed to check for updates' })
+  } finally {
+    isManualCheck = false
+    autoUpdater.autoDownload = originalAutoDownload
+  }
+}
+
+/**
+ * Legacy function for backward compatibility
+ * Now calls autoCheckForUpdates
+ * @deprecated Use autoCheckForUpdates or manualCheckForUpdates instead
+ */
+export async function checkForUpdates(): Promise<void> {
+  return autoCheckForUpdates()
+}
+
+// ============================================================================
+// Installation
+// ============================================================================
 
 /**
  * Quit and install update
@@ -168,12 +286,17 @@ export function quitAndInstall(): void {
   }, QUIT_AND_INSTALL_DELAY_MS)
 }
 
+// ============================================================================
+// IPC Handlers
+// ============================================================================
+
 /**
  * Register IPC handlers for updater
  */
 export function registerUpdaterHandlers(): void {
+  // Manual check - user triggered, no auto-download
   ipcMain.handle('updater:check', async () => {
-    await checkForUpdates()
+    await manualCheckForUpdates()
   })
 
   ipcMain.handle('updater:install', () => {

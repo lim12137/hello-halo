@@ -81,7 +81,7 @@ import {
 import { initializeApp } from './services/config.service'
 import { disableRemoteAccess } from './services/remote.service'
 import { stopOpenAICompatRouter } from './openai-compat-router'
-import { checkForUpdates } from './services/updater.service'
+import { manualCheckForUpdates } from './services/updater.service'
 import { initAnalytics } from './services/analytics'
 import { registerProtocols } from './services/protocol.service'
 import { setMainWindow } from './services/window.service'
@@ -148,7 +148,7 @@ function createAppMenu(): void {
               { type: 'separator' as const },
               {
                 label: 'Check for Updates...',
-                click: () => checkForUpdates()
+                click: () => manualCheckForUpdates()
               },
               { type: 'separator' as const },
               { role: 'services' as const },
@@ -220,7 +220,7 @@ function createAppMenu(): void {
           ? [
               {
                 label: 'Check for Updates...',
-                click: () => checkForUpdates()
+                click: () => manualCheckForUpdates()
               },
               { type: 'separator' as const }
             ]
