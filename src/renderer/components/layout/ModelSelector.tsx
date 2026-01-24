@@ -81,7 +81,11 @@ export function ModelSelector() {
 
   if (!config) return null
 
+  // Debug config
   const aiSources = config.aiSources || { current: 'custom' as AISourceType }
+  console.log('[ModelSelector] aiSources:', aiSources)
+  console.log('[ModelSelector] custom config:', aiSources.custom)
+
   const currentSource = aiSources.current
   const hasCustom = !!(aiSources.custom?.apiKey)
   const isCustomAnthropic = aiSources.custom?.provider === 'anthropic'
@@ -160,7 +164,7 @@ export function ModelSelector() {
 
       {/* Dropdown Menu */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-1 w-56 bg-card border border-border rounded-xl shadow-lg z-50 py-1 overflow-hidden">
+        <div className="absolute right-0 top-full mt-1 w-64 bg-card border border-border rounded-xl shadow-lg z-50 py-1 max-h-[60vh] overflow-y-auto">
           {/* Custom API Section */}
           {hasCustom && aiSources.custom && (
             <>
@@ -180,28 +184,50 @@ export function ModelSelector() {
                     key={model.id}
                     onClick={() => handleSelectModel('custom', model.id)}
                     className={`w-full px-3 py-2 text-left text-sm hover:bg-secondary/80 transition-colors flex items-center gap-2 ${currentSource === 'custom' && aiSources.custom?.model === model.id
-                        ? 'text-primary'
-                        : 'text-foreground'
+                      ? 'text-primary'
+                      : 'text-foreground'
                       }`}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full ${currentSource === 'custom' && aiSources.custom?.model === model.id
-                        ? 'bg-primary'
-                        : 'bg-transparent'
+                      ? 'bg-primary'
+                      : 'bg-transparent'
                       }`} />
                     {model.name}
                   </button>
                 ))
               ) : (
-                // OpenAI compatible: show current model only (user configures in settings)
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-secondary/80 transition-colors flex items-center gap-2 ${currentSource === 'custom' ? 'text-primary' : 'text-foreground'
-                    }`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${currentSource === 'custom' ? 'bg-primary' : 'bg-transparent'
-                    }`} />
-                  {aiSources.custom?.model || 'Custom Model'}
-                </button>
+                // OpenAI compatible: show fetched models if available
+                <>
+                  {(aiSources.custom?.availableModels && aiSources.custom.availableModels.length > 0) ? (
+                    aiSources.custom.availableModels.map((modelId) => (
+                      <button
+                        key={modelId}
+                        onClick={() => handleSelectModel('custom', modelId)}
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-secondary/80 transition-colors flex items-center gap-2 ${currentSource === 'custom' && aiSources.custom?.model === modelId
+                          ? 'text-primary'
+                          : 'text-foreground'
+                          }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${currentSource === 'custom' && aiSources.custom?.model === modelId
+                          ? 'bg-primary'
+                          : 'bg-transparent'
+                          }`} />
+                        {modelId}
+                      </button>
+                    ))
+                  ) : (
+                    // Fallback to showing current model only
+                    <button
+                      onClick={() => setIsOpen(false)}
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-secondary/80 transition-colors flex items-center gap-2 ${currentSource === 'custom' ? 'text-primary' : 'text-foreground'
+                        }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${currentSource === 'custom' ? 'bg-primary' : 'bg-transparent'
+                        }`} />
+                      {aiSources.custom?.model || 'Custom Model'}
+                    </button>
+                  )}
+                </>
               )}
             </>
           )}
@@ -220,13 +246,13 @@ export function ModelSelector() {
                     key={modelId}
                     onClick={() => handleSelectModel(provider.type, modelId)}
                     className={`w-full px-3 py-2 text-left text-sm hover:bg-secondary/80 transition-colors flex items-center gap-2 ${currentSource === provider.type && provider.config?.model === modelId
-                        ? 'text-primary'
-                        : 'text-foreground'
+                      ? 'text-primary'
+                      : 'text-foreground'
                       }`}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full ${currentSource === provider.type && provider.config?.model === modelId
-                        ? 'bg-primary'
-                        : 'bg-transparent'
+                      ? 'bg-primary'
+                      : 'bg-transparent'
                       }`} />
                     {displayName}
                   </button>
