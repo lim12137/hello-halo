@@ -4,9 +4,9 @@
  */
 
 import { Express, Request, Response } from 'express'
-import { BrowserWindow } from 'electron'
-import { createReadStream, statSync, existsSync, readdirSync } from 'fs'
-import { join, basename, relative } from 'path'
+import { BrowserWindow, app as electronApp } from 'electron'
+import { createReadStream, statSync, existsSync, readdirSync, realpathSync } from 'fs'
+import { join, basename, relative, resolve, isAbsolute } from 'path'
 import { createGzip } from 'zlib'
 import { Readable } from 'stream'
 
@@ -14,8 +14,16 @@ import * as agentController from '../../controllers/agent.controller'
 import * as spaceController from '../../controllers/space.controller'
 import * as conversationController from '../../controllers/conversation.controller'
 import * as configController from '../../controllers/config.controller'
-import { listArtifacts } from '../../services/artifact.service'
-import { getTempSpacePath } from '../../services/config.service'
+import { getEnabledAuthProviderConfigs } from '../../services/ai-sources'
+import {
+  listArtifacts,
+  listArtifactsTree,
+  loadTreeChildren,
+  readArtifactContent,
+  saveArtifactContent,
+  detectFileType
+} from '../../services/artifact.service'
+import { getTempSpacePath, getSpacesDir } from '../../services/config.service'
 import { getSpace, getAllSpacePaths } from '../../services/space.service'
 
 // Helper: get working directory for a space
@@ -47,6 +55,64 @@ function collectFiles(dir: string, baseDir: string, files: { path: string; fullP
 }
 
 /**
+ * Check if target path is inside base path.
+ * Uses realpathSync to resolve symlinks and prevent symlink-based path traversal attacks.
+ */
+function isPathInside(target: string, base: string): boolean {
+  try {
+    // Use realpathSync to resolve symlinks for security
+    const realBase = realpathSync(base)
+    const realTarget = realpathSync(target)
+    const relativePath = relative(realBase, realTarget)
+    return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+  } catch {
+    // If path doesn't exist or can't be resolved, deny access
+    return false
+  }
+}
+
+/**
+ * Check if target path is allowed (inside any space directory).
+ * Resolves symlinks to prevent directory traversal via symlinks.
+ */
+function isPathAllowed(target: string): boolean {
+  // First check if path exists
+  if (!existsSync(target)) {
+    return false
+  }
+
+  try {
+    const realTarget = realpathSync(target)
+    const allowedBases = getAllSpacePaths().filter(p => existsSync(p))
+    return allowedBases.some(base => {
+      try {
+        const realBase = realpathSync(base)
+        const relativePath = relative(realBase, realTarget)
+        return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return false
+  }
+}
+
+function validateFilePath(res: Response, filePath?: string): string | null {
+  if (!filePath) {
+    res.status(400).json({ success: false, error: 'Missing file path' })
+    return null
+  }
+
+  if (!isPathAllowed(filePath)) {
+    res.status(403).json({ success: false, error: 'Access denied' })
+    return null
+  }
+
+  return resolve(filePath)
+}
+
+/**
  * Register all API routes
  */
 export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null): void {
@@ -65,6 +131,17 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
     const { apiKey, apiUrl, provider } = req.body
     const result = await configController.validateApi(apiKey, apiUrl, provider)
     res.json(result)
+  })
+
+  // ===== Auth Routes (Read-only for remote access) =====
+  // Remote clients use host machine's auth state, no login operations needed
+  app.get('/api/auth/providers', async (req: Request, res: Response) => {
+    try {
+      const providers = getEnabledAuthProviderConfigs()
+      res.json({ success: true, data: providers })
+    } catch (error) {
+      res.json({ success: false, error: (error as Error).message })
+    }
   })
 
   // ===== Space Routes =====
@@ -234,7 +311,7 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
   // ===== Artifact Routes =====
   app.get('/api/spaces/:spaceId/artifacts', async (req: Request, res: Response) => {
     try {
-      const artifacts = listArtifacts(req.params.spaceId)
+      const artifacts = await listArtifacts(req.params.spaceId)
       res.json({ success: true, data: artifacts })
     } catch (error) {
       res.json({ success: false, error: (error as Error).message })
@@ -244,9 +321,30 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
   // Tree view of artifacts
   app.get('/api/spaces/:spaceId/artifacts/tree', async (req: Request, res: Response) => {
     try {
-      const { listArtifactsTree } = await import('../../services/artifact.service')
-      const tree = listArtifactsTree(req.params.spaceId)
+      const tree = await listArtifactsTree(req.params.spaceId)
       res.json({ success: true, data: tree })
+    } catch (error) {
+      res.json({ success: false, error: (error as Error).message })
+    }
+  })
+
+  // Lazy load children for tree nodes
+  app.post('/api/spaces/:spaceId/artifacts/children', async (req: Request, res: Response) => {
+    try {
+      const { dirPath } = req.body
+      if (!dirPath) {
+        res.status(400).json({ success: false, error: 'Missing dirPath' })
+        return
+      }
+
+      const workDir = getWorkingDir(req.params.spaceId)
+      if (!isPathInside(dirPath, workDir)) {
+        res.status(403).json({ success: false, error: 'Access denied' })
+        return
+      }
+
+      const children = await loadTreeChildren(req.params.spaceId, dirPath)
+      res.json({ success: true, data: children })
     } catch (error) {
       res.json({ success: false, error: (error as Error).message })
     }
@@ -255,32 +353,23 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
   // Download single file
   app.get('/api/artifacts/download', async (req: Request, res: Response) => {
     try {
-      const filePath = req.query.path as string
-      if (!filePath) {
-        res.status(400).json({ success: false, error: 'Missing file path' })
+      const validatedPath = validateFilePath(res, req.query.path as string)
+      if (!validatedPath) {
         return
       }
 
-      // Security: ensure path is within allowed space directories
-      const allowedPaths = getAllSpacePaths()
-      const isAllowed = allowedPaths.some(spacePath => filePath.startsWith(spacePath))
-      if (!isAllowed) {
-        res.status(403).json({ success: false, error: 'Access denied' })
-        return
-      }
-
-      if (!existsSync(filePath)) {
+      if (!existsSync(validatedPath)) {
         res.status(404).json({ success: false, error: 'File not found' })
         return
       }
 
-      const stats = statSync(filePath)
-      const fileName = basename(filePath)
+      const stats = statSync(validatedPath)
+      const fileName = basename(validatedPath)
 
       if (stats.isDirectory()) {
         // For directories, create a simple tar.gz stream
         // Note: This is a simplified implementation. For production, use archiver package.
-        const files = collectFiles(filePath, filePath)
+        const files = collectFiles(validatedPath, validatedPath)
         if (files.length === 0) {
           res.status(404).json({ success: false, error: 'Directory is empty' })
           return
@@ -328,7 +417,7 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`)
         res.setHeader('Content-Length', stats.size)
 
-        const readStream = createReadStream(filePath)
+        const readStream = createReadStream(validatedPath)
         readStream.pipe(res)
       }
     } catch (error) {
@@ -369,6 +458,73 @@ export function registerApiRoutes(app: Express, mainWindow: BrowserWindow | null
     } catch (error) {
       console.error('[Download All] Error:', error)
       res.status(500).json({ success: false, error: (error as Error).message })
+    }
+  })
+
+  // Read artifact content (Content Canvas fallback for remote mode)
+  app.get('/api/artifacts/content', async (req: Request, res: Response) => {
+    try {
+      const validatedPath = validateFilePath(res, req.query.path as string)
+      if (!validatedPath) {
+        return
+      }
+
+      if (!existsSync(validatedPath)) {
+        res.status(404).json({ success: false, error: 'File not found' })
+        return
+      }
+
+      const result = readArtifactContent(validatedPath)
+      res.json({ success: true, data: result })
+    } catch (error) {
+      res.status(500).json({ success: false, error: (error as Error).message })
+    }
+  })
+
+  // Save artifact content (remote mode edit)
+  app.post('/api/artifacts/save', async (req: Request, res: Response) => {
+    try {
+      const { path: filePath, content } = req.body
+      const validatedPath = validateFilePath(res, filePath)
+      if (!validatedPath) return
+
+      if (typeof content !== 'string') {
+        res.status(400).json({ success: false, error: 'Invalid content' })
+        return
+      }
+
+      saveArtifactContent(validatedPath, content)
+      res.json({ success: true })
+    } catch (error) {
+      res.status(500).json({ success: false, error: (error as Error).message })
+    }
+  })
+
+  // Detect file type (remote mode Canvas fallback)
+  app.get('/api/artifacts/detect-type', async (req: Request, res: Response) => {
+    try {
+      const validatedPath = validateFilePath(res, req.query.path as string)
+      if (!validatedPath) return
+
+      if (!existsSync(validatedPath)) {
+        res.status(404).json({ success: false, error: 'File not found' })
+        return
+      }
+
+      const info = detectFileType(validatedPath)
+      res.json({ success: true, data: info })
+    } catch (error) {
+      res.status(500).json({ success: false, error: (error as Error).message })
+    }
+  })
+
+  // ===== System Routes =====
+  app.get('/api/system/version', async (req: Request, res: Response) => {
+    try {
+      const version = electronApp.getVersion()
+      res.json({ success: true, data: version })
+    } catch (error) {
+      res.json({ success: false, error: (error as Error).message })
     }
   })
 

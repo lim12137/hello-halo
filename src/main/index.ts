@@ -20,7 +20,7 @@ process.on('uncaughtException', (error) => {
 // GUI apps don't inherit shell environment variables (.zshrc, .bash_profile, etc.)
 // This ensures tools like git, node, npm are discoverable
 // Executed after page load to avoid blocking startup
-import fixPath from 'fix-path'
+// Note: fix-path is ESM-only, loaded dynamically to support both CJS and ESM builds
 
 import { app, shell, BrowserWindow, Menu } from 'electron'
 
@@ -31,6 +31,10 @@ if (process.platform === 'win32') {
   app.disableHardwareAcceleration()
   app.commandLine.appendSwitch('disable-gpu')
 }
+
+// Anti-fingerprinting: Disable automation detection features in Chromium
+// This prevents websites from detecting the app as an automated browser
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 
 // Single instance lock: Prevent multiple instances of the application
 // Must be called before app.whenReady()
@@ -49,7 +53,7 @@ if (!gotTheLock) {
 app.on('second-instance', () => {
   // Focus the existing window when a second instance is launched
   if (mainWindow) {
-    // Restore from tray/hidden state if needed
+    // Restore from hidden state if needed
     if (!mainWindow.isVisible()) {
       mainWindow.show()
     }
@@ -74,21 +78,58 @@ import {
   initializeExtendedServices,
   cleanupExtendedServices
 } from './bootstrap'
-import { initializeApp, getMinimizeToTray } from './services/config.service'
+import { initializeApp } from './services/config.service'
 import { disableRemoteAccess } from './services/remote.service'
 import { stopOpenAICompatRouter } from './openai-compat-router'
-import {
-  createTray,
-  destroyTray,
-  hasTray,
-  setIsQuitting,
-  getIsQuitting
-} from './services/tray.service'
-import { checkForUpdates } from './services/updater.service'
+import { manualCheckForUpdates } from './services/updater.service'
 import { initAnalytics } from './services/analytics'
 import { registerProtocols } from './services/protocol.service'
+import { setMainWindow } from './services/window.service'
 
 let mainWindow: BrowserWindow | null = null
+let isAppQuitting = false
+let recentRecoveryWindowStart = 0
+let recoveryAttempts = 0
+
+function recoverRenderer(reason: string): void {
+  if (isAppQuitting) {
+    return
+  }
+
+  const now = Date.now()
+  if (now - recentRecoveryWindowStart > 60000) {
+    recentRecoveryWindowStart = now
+    recoveryAttempts = 0
+  }
+
+  recoveryAttempts += 1
+  console.warn(`[Main] Renderer issue detected (${reason}). Attempting recovery #${recoveryAttempts}`)
+
+  if (recoveryAttempts > 3) {
+    console.error('[Main] Renderer failed repeatedly. Relaunching app for a clean state.')
+    app.relaunch()
+    app.exit(0)
+    return
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.reloadIgnoringCache()
+      mainWindow.show()
+      return
+    } catch (error) {
+      console.error('[Main] Failed to reload renderer, recreating window:', error)
+      try {
+        mainWindow.destroy()
+      } catch (destroyError) {
+        console.error('[Main] Failed to destroy corrupted window:', destroyError)
+      }
+      mainWindow = null
+    }
+  }
+
+  createWindow()
+}
 
 /**
  * Create application menu with Check for Updates option
@@ -107,7 +148,7 @@ function createAppMenu(): void {
               { type: 'separator' as const },
               {
                 label: 'Check for Updates...',
-                click: () => checkForUpdates()
+                click: () => manualCheckForUpdates()
               },
               { type: 'separator' as const },
               { role: 'services' as const },
@@ -179,7 +220,7 @@ function createAppMenu(): void {
           ? [
               {
                 label: 'Check for Updates...',
-                click: () => checkForUpdates()
+                click: () => manualCheckForUpdates()
               },
               { type: 'separator' as const }
             ]
@@ -236,35 +277,29 @@ function createWindow(): void {
   })
 
   // Fix PATH after page loads (avoid blocking startup)
-  mainWindow.webContents.on('did-finish-load', () => {
+  mainWindow.webContents.on('did-finish-load', async () => {
     if (process.platform !== 'win32') {
+      // Dynamic import for ESM-only fix-path module
+      const { default: fixPath } = await import('fix-path')
       fixPath()
     }
   })
 
-  // Handle window close - minimize to tray if enabled
-  mainWindow.on('close', (event) => {
-    // If quitting, allow close
-    if (getIsQuitting()) {
-      return
-    }
-
-    // If minimize to tray is enabled, hide instead of close
-    if (getMinimizeToTray()) {
-      event.preventDefault()
-      mainWindow?.hide()
-
-      // On macOS, also hide from dock
-      if (process.platform === 'darwin') {
-        app.dock?.hide()
-      }
-
-      // Create tray if not exists
-      if (!hasTray()) {
-        createTray(mainWindow)
-      }
-    }
+  mainWindow.on('unresponsive', () => {
+    recoverRenderer('unresponsive')
   })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    recoverRenderer(`render-process-gone:${details.reason}`)
+  })
+
+  mainWindow.on('closed', () => {
+    setMainWindow(null)
+    mainWindow = null
+  })
+
+  // Notify all subscribers about the new window
+  setMainWindow(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -313,9 +348,8 @@ app.whenReady().then(async () => {
 
   // Phase 1: Essential Services (synchronous, required for first screen)
   // These services are needed for the initial UI render
-  if (mainWindow) {
-    initializeEssentialServices(mainWindow)
-  }
+  // Window reference is managed by window.service.ts
+  initializeEssentialServices()
 
   // Phase 2: Extended Services (deferred until window is visible)
   // This ensures Extended initialization NEVER affects startup speed
@@ -326,17 +360,12 @@ app.whenReady().then(async () => {
       // Additional delay to ensure first paint is complete
       // requestIdleCallback equivalent for Node.js
       setImmediate(() => {
-        initializeExtendedServices(mainWindow!)
+        initializeExtendedServices()
 
         // Initialize analytics (after IPC handlers registered and window created)
         initAnalytics().catch(err => console.warn('[Analytics] Init failed:', err))
       })
     })
-  }
-
-  // Initialize tray if minimize to tray is enabled
-  if (getMinimizeToTray()) {
-    createTray(mainWindow)
   }
 
   app.on('activate', function () {
@@ -350,30 +379,29 @@ app.whenReady().then(async () => {
   })
 })
 
-// Set quitting flag before quit
+let hasShutdown = false
+async function shutdownServices(): Promise<void> {
+  if (hasShutdown) {
+    return
+  }
+  hasShutdown = true
+  await disableRemoteAccess().catch(console.error)
+  await stopOpenAICompatRouter().catch(console.error)
+  await cleanupExtendedServices().catch(console.error)
+}
+
 app.on('before-quit', () => {
-  setIsQuitting(true)
+  isAppQuitting = true
+  shutdownServices().catch(console.error)
 })
 
 app.on('window-all-closed', () => {
-  // If minimize to tray is enabled, don't quit
-  if (getMinimizeToTray() && !getIsQuitting()) {
-    return
-  }
-
-  // Clean up remote access before quitting
-  disableRemoteAccess().catch(console.error)
-  // Clean up local OpenAI compat router (if started)
-  stopOpenAICompatRouter().catch(console.error)
-
-  // Clean up extended services (AI Browser, Overlay, Search, etc.)
-  cleanupExtendedServices()
-
-  // Clean up tray
-  destroyTray()
-
   if (process.platform !== 'darwin') {
-    app.quit()
+    shutdownServices()
+      .catch(console.error)
+      .finally(() => {
+        app.quit()
+      })
   }
 })
 

@@ -1,18 +1,26 @@
 /**
- * API Setup - First-time configuration
+ * API Setup - Custom API configuration
  * No validation - just save and enter, errors will show on first chat
  * Includes language selector for first-time users
+ * Now supports back button for multi-source login flow
  */
 
 import { useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../api'
 import { Lightbulb } from '../icons/ToolIcons'
-import { Globe, ChevronDown } from 'lucide-react'
+import { Globe, ChevronDown, ArrowLeft, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { AVAILABLE_MODELS, DEFAULT_MODEL } from '../../types'
 import { useTranslation, setLanguage, getCurrentLanguage, SUPPORTED_LOCALES, type LocaleCode } from '../../i18n'
 
-export function ApiSetup() {
+interface ApiSetupProps {
+  /** Called when user clicks back button */
+  onBack?: () => void
+  /** Whether to show the back button */
+  showBack?: boolean
+}
+
+export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
   const { t } = useTranslation()
   const { config, setConfig, setView } = useAppStore()
 
@@ -29,9 +37,17 @@ export function ApiSetup() {
     return !AVAILABLE_MODELS.some(m => m.id === currentModel)
   })
 
+  // Model fetching state
+  const [fetchedModels, setFetchedModels] = useState<string[]>(
+    (config?.api.availableModels as string[]) || []
+  )
+  const [isFetchingModels, setIsFetchingModels] = useState(false)
+
   // Language selector state
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false)
   const [currentLang, setCurrentLang] = useState<LocaleCode>(getCurrentLanguage())
+  // API Key visibility
+  const [showApiKey, setShowApiKey] = useState(false)
 
   // Handle language change
   const handleLanguageChange = (lang: LocaleCode) => {
@@ -41,7 +57,7 @@ export function ApiSetup() {
   }
 
   const handleProviderChange = (next: string) => {
-    setProvider(next)
+    setProvider(next as any)
     setError(null)
 
     if (next === 'anthropic') {
@@ -58,6 +74,75 @@ export function ApiSetup() {
     }
   }
 
+  // Fetch models from custom API
+  const fetchModels = async () => {
+    if (!apiUrl) {
+      setError(t('Please enter API URL first'))
+      return
+    }
+    if (!apiKey) {
+      setError(t('Please enter API Key first'))
+      return
+    }
+
+    setIsFetchingModels(true)
+    setError(null)
+
+    try {
+      // Construct models endpoint
+      let baseUrl = apiUrl
+      if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
+
+      // Remove /chat/completions suffix if present (common mistake)
+      if (baseUrl.endsWith('/chat/completions')) {
+        baseUrl = baseUrl.replace(/\/chat\/completions$/, '')
+      }
+
+      const url = `${baseUrl}/models`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch models (${response.status})`)
+      }
+
+      const data = await response.json()
+
+      // OpenAI compatible format: { data: [{ id: 'model-id', ... }] }
+      if (data.data && Array.isArray(data.data)) {
+        const models = data.data
+          .map((m: any) => m.id)
+          .filter((id: any) => typeof id === 'string')
+          .sort()
+
+        if (models.length === 0) {
+          throw new Error('No models found in response')
+        }
+
+        setFetchedModels(models)
+
+        // If current model is not in list (and we found models), select the first one?
+        // Or just let user decide. 
+        // If current model is default generic one, maybe switch to first fetched.
+        if (models.length > 0 && (!model || model === 'gpt-4o-mini' || model === 'deepseek-chat')) {
+          setModel(models[0])
+        }
+      } else {
+        throw new Error('Invalid API response format (expected data array)')
+      }
+    } catch {
+      setError(t('Failed to fetch models. Check URL and Key.'))
+    } finally {
+      setIsFetchingModels(false)
+    }
+  }
+
   // Handle save and enter
   const handleSaveAndEnter = async () => {
     if (!apiKey.trim()) {
@@ -69,14 +154,23 @@ export function ApiSetup() {
     setError(null)
 
     try {
-      // Save config directly without validation
+      // Save config with new aiSources structure
+      const customConfig = {
+        provider: provider as 'anthropic' | 'openai',
+        apiKey,
+        apiUrl: apiUrl || 'https://api.anthropic.com',
+        model,
+        availableModels: fetchedModels
+      }
+
       const newConfig = {
         ...config,
-        api: {
-          provider: provider as any,
-          apiKey,
-          apiUrl: apiUrl || 'https://api.anthropic.com',
-          model
+        // Legacy api field for backward compatibility
+        api: customConfig,
+        // New aiSources structure
+        aiSources: {
+          current: 'custom' as const,
+          custom: customConfig
         },
         isFirstLaunch: false
       }
@@ -93,7 +187,19 @@ export function ApiSetup() {
   }
 
   return (
-    <div className="h-full w-full flex flex-col items-center justify-center bg-background p-8 relative">
+    <div className="h-full w-full flex flex-col items-center justify-center bg-background p-8 relative overflow-auto">
+      {/* Back Button - Top Left (when showBack is true) */}
+      {showBack && onBack && (
+        <div className="absolute top-6 left-6">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-lg transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Language Selector - Top Right */}
       <div className="absolute top-6 right-6">
         <div className="relative">
@@ -119,9 +225,8 @@ export function ApiSetup() {
                   <button
                     key={code}
                     onClick={() => handleLanguageChange(code as LocaleCode)}
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-secondary/80 transition-colors ${
-                      currentLang === code ? 'text-primary font-medium' : 'text-foreground'
-                    }`}
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-secondary/80 transition-colors ${currentLang === code ? 'text-primary font-medium' : 'text-foreground'
+                      }`}
                   >
                     {name}
                   </button>
@@ -143,14 +248,16 @@ export function ApiSetup() {
 
       {/* Main content */}
       <div className="w-full max-w-md">
-        <h2 className="text-center text-lg mb-6">{t('Before you start, configure your AI')}</h2>
+        <h2 className="text-center text-lg mb-6">
+          {showBack ? t('Configure Custom API') : t('Before you start, configure your AI')}
+        </h2>
 
         <div className="bg-card rounded-xl p-6 border border-border">
           {/* Provider */}
           <div className="mb-4 flex items-center justify-between gap-3 p-3 bg-secondary/50 rounded-lg">
             <div className="w-8 h-8 rounded-lg bg-[#da7756]/20 flex items-center justify-center">
               <svg className="w-5 h-5 text-[#da7756]" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M4.709 15.955l4.72-2.647.08-.08 2.726-1.529.08-.08 6.206-3.48a.25.25 0 00.125-.216V6.177a.25.25 0 00-.375-.217l-6.206 3.48-.08.08-2.726 1.53-.08.079-4.72 2.647a.25.25 0 00-.125.217v1.746c0 .18.193.294.354.216h.001zm13.937-3.584l-4.72 2.647-.08.08-2.726 1.529-.08.08-6.206 3.48a.25.25 0 00-.125.216v1.746a.25.25 0 00.375.217l6.206-3.48.08-.08 2.726-1.53.08-.079 4.72-2.647a.25.25 0 00.125-.217v-1.746a.25.25 0 00-.375-.216z"/>
+                <path d="M4.709 15.955l4.72-2.647.08-.08 2.726-1.529.08-.08 6.206-3.48a.25.25 0 00.125-.216V6.177a.25.25 0 00-.375-.217l-6.206 3.48-.08.08-2.726 1.53-.08.079-4.72 2.647a.25.25 0 00-.125.217v1.746c0 .18.193.294.354.216h.001zm13.937-3.584l-4.72 2.647-.08.08-2.726 1.529-.08.08-6.206 3.48a.25.25 0 00-.125.216v1.746a.25.25 0 00.375.217l6.206-3.48.08-.08 2.726-1.53.08-.079 4.72-2.647a.25.25 0 00.125-.217v-1.746a.25.25 0 00-.375-.216z" />
               </svg>
             </div>
             <div>
@@ -178,13 +285,22 @@ export function ApiSetup() {
           {/* API Key input */}
           <div className="mb-4">
             <label className="block text-sm text-muted-foreground mb-2">API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={provider === 'openai' ? 'sk-xxxxxxxxxxxxx' : 'sk-ant-xxxxxxxxxxxxx'}
-              className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-            />
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={provider === 'openai' ? 'sk-xxxxxxxxxxxxx' : 'sk-ant-xxxxxxxxxxxxx'}
+                className="w-full px-4 py-2 pr-12 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
           {/* API URL input */}
@@ -246,21 +362,59 @@ export function ApiSetup() {
                           setModel(DEFAULT_MODEL)
                         }
                       }}
-                    className="w-3 h-3 rounded border-border"
-                  />
+                      className="w-3 h-3 rounded border-border"
+                    />
                     {t('Custom')}
                   </label>
                 </div>
               </>
             ) : (
               <>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="gpt-4o-mini / deepseek-chat"
-                  className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-                />
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    {fetchedModels.length > 0 ? (
+                      <select
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors appearance-none"
+                      >
+                        {/* Ensure current model is an option even if not in fetched list (e.g. manual entry previously) */}
+                        {!fetchedModels.includes(model) && model && (
+                          <option value={model}>{model}</option>
+                        )}
+                        {fetchedModels.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        placeholder="gpt-4o-mini / deepseek-chat"
+                        className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                      />
+                    )}
+                    {/* Chevron for select */}
+                    {fetchedModels.length > 0 && (
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground">
+                        <ChevronDown className="w-4 h-4" />
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={fetchModels}
+                    disabled={isFetchingModels || !apiKey || !apiUrl}
+                    className="px-3 py-2 bg-secondary hover:bg-secondary/80 text-foreground rounded-lg border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={t('Fetch available models')}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {t('Enter OpenAI compatible service model name')}
                 </p>

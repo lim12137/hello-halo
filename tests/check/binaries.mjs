@@ -6,7 +6,14 @@
  * Verifies that all required binary dependencies are present before packaging.
  * This prevents shipping broken builds to users.
  *
- * Usage: node tests/check/binaries.mjs [--platform mac|win|all]
+ * Usage: node tests/check/binaries.mjs [--platform mac-arm64|mac-x64|win|linux|all]
+ *
+ * Platforms:
+ *   mac-arm64 - Mac Apple Silicon (M1/M2/M3/M4)
+ *   mac-x64   - Mac Intel
+ *   win       - Windows x64
+ *   linux     - Linux x64
+ *   all       - All platforms (default)
  *
  * Exit codes:
  *   0 - All checks passed
@@ -42,16 +49,16 @@ const log = {
  * Binary dependency definitions
  * Each dependency specifies:
  * - path: Relative path from project root
- * - platform: Which platform needs this binary (mac, win, all)
+ * - platform: Which platform needs this binary (mac-arm64, mac-x64, win, linux, all)
  * - fix: Command to fix if missing
  * - validate: Optional function to validate the binary
  */
 const BINARY_DEPENDENCIES = [
   {
-    name: 'Mac cloudflared',
+    name: 'Mac arm64 cloudflared',
     path: 'node_modules/cloudflared/bin/cloudflared',
-    platform: 'mac',
-    fix: 'npm install (triggers postinstall)',
+    platform: 'mac-arm64',
+    fix: 'npm install (triggers postinstall) or npm run prepare:mac-arm64',
     validate: (filePath) => {
       try {
         const output = execSync(`file "${filePath}"`, { encoding: 'utf-8' })
@@ -63,7 +70,23 @@ const BINARY_DEPENDENCIES = [
     }
   },
   {
-    name: 'Windows cloudflared',
+    name: 'Mac x64 cloudflared',
+    path: 'node_modules/cloudflared/bin/cloudflared-darwin-x64',
+    platform: 'mac-x64',
+    fix: 'npm run prepare:mac-x64',
+    validate: (filePath) => {
+      try {
+        const stats = fs.statSync(filePath)
+        const sizeMB = (stats.size / 1024 / 1024).toFixed(1)
+        // Mac x64 binary should be > 30MB
+        return { valid: stats.size > 30 * 1024 * 1024, info: `${sizeMB} MB` }
+      } catch {
+        return { valid: false, info: 'cannot read file' }
+      }
+    }
+  },
+  {
+    name: 'Windows x64 cloudflared',
     path: 'node_modules/cloudflared/bin/cloudflared.exe',
     platform: 'win',
     fix: 'npm run prepare:win-x64',
@@ -73,6 +96,22 @@ const BINARY_DEPENDENCIES = [
         // Windows exe should be > 10MB
         const sizeMB = (stats.size / 1024 / 1024).toFixed(1)
         return { valid: stats.size > 10 * 1024 * 1024, info: `${sizeMB} MB` }
+      } catch {
+        return { valid: false, info: 'cannot read file' }
+      }
+    }
+  },
+  {
+    name: 'Linux x64 cloudflared',
+    path: 'node_modules/cloudflared/bin/cloudflared-linux-x64',
+    platform: 'linux',
+    fix: 'npm run prepare:linux-x64',
+    validate: (filePath) => {
+      try {
+        const stats = fs.statSync(filePath)
+        const sizeMB = (stats.size / 1024 / 1024).toFixed(1)
+        // Linux binary should be > 30MB
+        return { valid: stats.size > 30 * 1024 * 1024, info: `${sizeMB} MB` }
       } catch {
         return { valid: false, info: 'cannot read file' }
       }
@@ -172,11 +211,14 @@ function parseArgs() {
   const args = process.argv.slice(2)
   let platform = 'all'
 
+  const validPlatforms = ['mac-arm64', 'mac-x64', 'win', 'linux', 'all']
+
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--platform' && args[i + 1]) {
       platform = args[i + 1]
-      if (!['mac', 'win', 'all'].includes(platform)) {
-        log.error(`Invalid platform: ${platform}. Use mac, win, or all.`)
+      if (!validPlatforms.includes(platform)) {
+        log.error(`Invalid platform: ${platform}`)
+        console.log(`Valid platforms: ${validPlatforms.join(', ')}`)
         process.exit(1)
       }
     }

@@ -12,7 +12,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { ArtifactCard } from './ArtifactCard'
 import { ArtifactTree } from './ArtifactTree'
 import { api } from '../../api'
-import type { Artifact, ArtifactViewMode } from '../../types'
+import type { Artifact, ArtifactViewMode, ArtifactChangeEvent } from '../../types'
 import { useIsGenerating } from '../../stores/chat.store'
 import { useOnboardingStore } from '../../stores/onboarding.store'
 import { useCanvasLifecycle } from '../../hooks/useCanvasLifecycle'
@@ -20,6 +20,7 @@ import { useCanvasStore } from '../../stores/canvas.store'
 import { ChevronRight, FolderOpen, Monitor, LayoutGrid, FolderTree, X, Globe } from 'lucide-react'
 import { ONBOARDING_ARTIFACT_NAME } from '../onboarding/onboardingData'
 import { useTranslation } from '../../i18n'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 // Check if running in web mode
 const isWebMode = api.isRemoteMode()
@@ -33,9 +34,6 @@ const MAX_WIDTH = 400
 const DEFAULT_WIDTH = 240
 const COLLAPSED_WIDTH = 48
 
-// Mobile breakpoint (matches Tailwind sm)
-const MOBILE_BREAKPOINT = 640
-
 interface ArtifactRailProps {
   spaceId: string
   isTemp: boolean
@@ -43,25 +41,6 @@ interface ArtifactRailProps {
   // External control props for Canvas integration
   externalExpanded?: boolean        // Controlled expanded state from parent
   onExpandedChange?: (expanded: boolean) => void  // Callback when user toggles
-}
-
-// Hook to detect mobile viewport
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.innerWidth < MOBILE_BREAKPOINT
-  })
-
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
-    }
-
-    window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
-  }, [])
-
-  return isMobile
 }
 
 // Load initial view mode from storage
@@ -73,6 +52,39 @@ function getInitialViewMode(): ArtifactViewMode {
 
 // Default browser home URL
 const DEFAULT_BROWSER_URL = 'https://www.bing.com'
+
+function normalizeArtifactFromEvent(item: unknown, fallbackSpaceId: string): Artifact | null {
+  if (!item || typeof item !== 'object') return null
+  const candidate = item as Partial<Artifact> & {
+    path?: string
+    name?: string
+    type?: string
+    icon?: string
+    extension?: string
+    size?: number
+    createdAt?: string
+    spaceId?: string
+    id?: string
+  }
+
+  if (!candidate.path || !candidate.name) {
+    return null
+  }
+
+  return {
+    id: candidate.id || `artifact-${Date.now()}`,
+    spaceId: candidate.spaceId || fallbackSpaceId,
+    conversationId: 'all',
+    name: candidate.name,
+    type: candidate.type === 'folder' ? 'folder' : 'file',
+    path: candidate.path,
+    extension: candidate.extension || '',
+    icon: candidate.icon || 'file-text',
+    createdAt: candidate.createdAt || new Date().toISOString(),
+    preview: undefined,
+    size: typeof candidate.size === 'number' ? candidate.size : undefined
+  }
+}
 
 export function ArtifactRail({
   spaceId,
@@ -101,19 +113,17 @@ export function ArtifactRail({
   // Canvas lifecycle for opening browser
   const { openUrl } = useCanvasLifecycle()
 
-  // Check if any browser tab is open (native BrowserView)
-  // When browser tabs exist, disable CSS transition to sync with native view resize
-  // Use precise selector to avoid subscribing to full tabs array
-  const hasBrowserTab = useCanvasStore(state => state.tabs.some(tab => tab.type === 'browser'))
+  // When Canvas is open, disable transition to prevent layout flicker during resize/close
+  const isCanvasOpen = useCanvasStore(state => state.isOpen)
 
   // Handle expand/collapse toggle
   const handleToggleExpanded = useCallback(() => {
     console.log('[ArtifactRail] 🔴 Click! isExpanded:', isExpanded, 'time:', Date.now())
     const newExpanded = !isExpanded
 
-    // UI-first optimization: When browser tab exists, directly update DOM
-    // before React state update to ensure BrowserView resizes immediately
-    if (hasBrowserTab && railRef.current) {
+    // UI-first optimization: When Canvas is open, directly update DOM
+    // before React state update to ensure layout resizes immediately
+    if (isCanvasOpen && railRef.current) {
       const targetWidth = newExpanded ? width : COLLAPSED_WIDTH
       railRef.current.style.width = `${targetWidth}px`
       console.log('[ArtifactRail] 🚀 Direct DOM update:', targetWidth, 'time:', Date.now())
@@ -125,7 +135,7 @@ export function ArtifactRail({
     } else {
       setInternalExpanded(newExpanded)
     }
-  }, [isExpanded, isControlled, onExpandedChange, hasBrowserTab, width])
+  }, [isExpanded, isControlled, onExpandedChange, isCanvasOpen, width])
 
   // Debug: log when isExpanded changes
   useEffect(() => {
@@ -215,13 +225,65 @@ export function ArtifactRail({
     loadArtifacts()
   }, [loadArtifacts])
 
-  // Refresh artifacts when generation completes
+  // Refresh artifacts when generation completes (debounced)
   useEffect(() => {
     if (!isGenerating) {
       const timer = setTimeout(loadArtifacts, 500)
       return () => clearTimeout(timer)
     }
   }, [isGenerating, loadArtifacts])
+
+  // Subscribe to artifact change events for incremental updates
+  useEffect(() => {
+    if (!spaceId) return
+
+    // Initialize watcher for this space
+    api.initArtifactWatcher(spaceId).catch(err => {
+      console.error('[ArtifactRail] Failed to init watcher:', err)
+    })
+
+    // Subscribe to change events
+    const cleanup = api.onArtifactChanged((event: ArtifactChangeEvent) => {
+      if (event.spaceId !== spaceId) return
+
+      console.log('[ArtifactRail] Artifact changed:', event.type, event.relativePath)
+
+      const normalizedArtifact = event.item
+        ? normalizeArtifactFromEvent(event.item, spaceId)
+        : null
+
+      switch (event.type) {
+        case 'add':
+        case 'addDir':
+          if (normalizedArtifact) {
+            setArtifacts(prev => {
+              if (prev.some(a => a.path === normalizedArtifact.path)) return prev
+              return [normalizedArtifact, ...prev]
+            })
+          } else {
+            loadArtifacts()
+          }
+          break
+
+        case 'unlink':
+        case 'unlinkDir':
+          setArtifacts(prev => prev.filter(a => a.path !== event.path))
+          break
+
+        case 'change':
+          if (normalizedArtifact) {
+            setArtifacts(prev =>
+              prev.map(a => (a.path === normalizedArtifact.path ? normalizedArtifact : a))
+            )
+          } else {
+            loadArtifacts()
+          }
+          break
+      }
+    })
+
+    return cleanup
+  }, [spaceId, loadArtifacts])
 
   // Refresh artifacts when entering view-artifact onboarding step
   useEffect(() => {
@@ -271,15 +333,13 @@ export function ArtifactRail({
             </div>
           ) : (
             <div className="space-y-2">
-              {artifacts.map((artifact, index) => {
+              {artifacts.map((artifact) => {
                 // Check if this is the onboarding artifact
                 const isOnboardingArtifact = artifact.name === ONBOARDING_ARTIFACT_NAME
 
                 return (
                   <div
                     key={artifact.id}
-                    className="animate-fade-in"
-                    style={{ animationDelay: `${index * 50}ms` }}
                     data-onboarding={isOnboardingArtifact && isOnboardingViewStep ? 'artifact-card' : undefined}
                     onClick={isOnboardingArtifact && isOnboardingViewStep ? handleOnboardingArtifactClick : undefined}
                   >
@@ -337,11 +397,11 @@ export function ArtifactRail({
   if (isMobile) {
     return (
       <>
-        {/* Floating trigger button */}
+        {/* Floating trigger button - z-[60] to stay above Canvas overlay (z-50) */}
         <button
           onClick={() => setMobileOverlayOpen(true)}
           className="
-            fixed right-0 top-1/3 z-40
+            fixed right-0 top-1/3 z-[60]
             w-10 h-14
             bg-card/90 backdrop-blur-sm
             border-l border-y border-border
@@ -362,9 +422,9 @@ export function ArtifactRail({
           )}
         </button>
 
-        {/* Overlay backdrop + panel */}
+        {/* Overlay backdrop + panel - z-[70] to stay above Canvas overlay (z-50) */}
         {mobileOverlayOpen && (
-          <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="fixed inset-0 z-[70] flex justify-end">
             {/* Backdrop */}
             <div
               className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-fade-in"
@@ -428,11 +488,11 @@ export function ArtifactRail({
   return (
     <div
       ref={railRef}
-      className="h-full border-l border-border bg-card/30 flex flex-col relative"
+      className="h-full flex-shrink-0 border-l border-border bg-card/30 flex flex-col relative"
       style={{
         width: displayWidth,
-        // Disable transition when: dragging OR browser tab exists (to sync with native BrowserView)
-        transition: (isDragging || hasBrowserTab) ? 'none' : 'width 0.2s ease'
+        // Disable transition when: dragging OR Canvas is open (prevent layout flicker)
+        transition: (isDragging || isCanvasOpen) ? 'none' : 'width 0.2s ease'
       }}
     >
       {/* Drag handle - only show when expanded */}

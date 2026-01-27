@@ -4,7 +4,7 @@
 
 # Halo
 
-### The First Open Source Cowork
+### Open Source Cowork for Everyone
 
 
 Experience the full power of an AI Agent without touching the terminal. Halo brings a visual, cross-platform desktop experience to everyone—open source and free.
@@ -127,7 +127,7 @@ Extend capabilities with Model Context Protocol. Compatible with Claude Desktop 
 | Platform | Download | Requirements |
 |----------|----------|--------------|
 | **macOS** (Apple Silicon) | [Download .dmg](https://github.com/openkursar/hello-halo/releases/latest) | macOS 11+ |
-| **macOS** (Intel) | Coming soon | macOS 11+ |
+| **macOS** (Intel) | [Download .dmg](https://github.com/openkursar/hello-halo/releases/latest) | macOS 11+ |
 | **Windows** | [Download .exe](https://github.com/openkursar/hello-halo/releases/latest) | Windows 10+ |
 | **Linux** | [Download .AppImage](https://github.com/openkursar/hello-halo/releases/latest) | Ubuntu 20.04+ |
 | **Web** (PC/Mobile) | Enable Remote Access in desktop app | Any modern browser |
@@ -154,7 +154,7 @@ npm run dev
 3. **Watch the magic** — see files appear in the Artifact Rail
 4. **Preview & iterate** — click any file to preview, ask for changes
 
-> **Pro tip:** For best results, use Claude Sonnet 4.5.5 or Opus 4.5.5 models.
+> **Pro tip:** For best results, use Claude Sonnet 4.5 or Opus 4.5 models.
 
 ---
 
@@ -180,6 +180,8 @@ npm run dev
 - **No Backend Required** — Pure desktop client, use your own API keys
 - **Real Agent Loop** — Tool execution, not just text generation
 
+> **Powered by [Claude Code](https://github.com/anthropics/claude-code)** — Thanks to Anthropic for building the most capable AI agent.
+
 ---
 
 ## What People Are Building
@@ -192,21 +194,6 @@ Halo isn't just for developers. We've seen:
 - **Developers** shipping features faster than ever
 
 The barrier isn't AI capability anymore. **It's accessibility.** Halo removes that barrier.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Framework | Electron + electron-vite |
-| Frontend | React 18 + TypeScript |
-| Styling | Tailwind CSS + shadcn/ui patterns |
-| State | Zustand |
-| Agent Core | @anthropic-ai/claude-code SDK |
-| Markdown | react-markdown + highlight.js |
-
-> **Powered by [Claude Code](https://github.com/anthropics/claude-code)** — Thanks to Anthropic for building the most capable AI agent.
 
 ---
 
@@ -267,7 +254,7 @@ During boring meetings (we've all been there), I thought: *What if I could contr
 
 Then came another problem — my non-technical colleagues wanted to try Claude Code after seeing what it could do. But they got stuck at installation. *"What's npm? How do I install Node.js?"* Some spent days trying to figure it out.
 
-So I built Halo for myself:
+So I built Halo for myself and my friends:
 - **Visual interface** — no more staring at terminal output
 - **One-click install** — no Node.js, no npm, just download and run
 - **Remote access** — control from phone, tablet, or any browser

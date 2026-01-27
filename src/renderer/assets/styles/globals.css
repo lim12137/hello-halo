@@ -104,6 +104,38 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  /* Prevent pull-to-refresh on mobile */
+  overscroll-behavior: none;
+}
+
+/* Safe area inset variables */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
+html, body {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* #root uses inset to handle safe areas globally */
+#root {
+  position: fixed;
+  top: var(--sat);
+  right: var(--sar);
+  bottom: var(--sab);
+  left: var(--sal);
+  overflow: hidden;
+}
+
+/* For Portal modals rendered outside #root */
+.overlay-safe {
+  padding: var(--sat) var(--sar) var(--sab) var(--sal);
 }
 
 /* Custom scrollbar */
@@ -123,6 +155,31 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Thin scrollbar for nested/inner containers */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.2);
+  border-radius: 2px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* Firefox support for thin scrollbar */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
 }
 
 /* Disable text selection on UI elements */
@@ -148,6 +205,41 @@ body {
 
 .scrollbar-none::-webkit-scrollbar {
   display: none;
+}
+
+/* Stable scrollbar - prevents layout shift when scrollbar appears/disappears */
+.scrollbar-overlay {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
+}
+
+.scrollbar-overlay::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-overlay::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-overlay::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.2);
+  border-radius: 3px;
+}
+
+.scrollbar-overlay::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* Thought content - reduced saturation for code highlighting in dark mode */
+.thought-content .hljs {
+  filter: saturate(0.6);
+}
+
+.light .thought-content .hljs {
+  filter: none; /* Light mode doesn't need adjustment */
 }
 
 /* ============================================
@@ -298,6 +390,33 @@ body {
 
 .animate-slide-out-top {
   animation: slide-out-top 0.2s ease-in forwards;
+}
+
+/* Bottom sheet animations for mobile */
+@keyframes slide-in-bottom {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-out-bottom {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+.animate-slide-in-bottom {
+  animation: slide-in-bottom 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.animate-slide-out-bottom {
+  animation: slide-out-bottom 0.25s cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
 /* Scale in animation for modals */

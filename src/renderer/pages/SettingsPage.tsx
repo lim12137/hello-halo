@@ -5,12 +5,53 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { api } from '../api'
-import type { HaloConfig, ThemeMode, McpServersConfig } from '../types'
+import { v4 as uuidv4 } from 'uuid'
+import type { HaloConfig, ThemeMode, McpServersConfig, AISourceType, OAuthSourceConfig, CustomSourceConfig } from '../types'
 import { AVAILABLE_MODELS, DEFAULT_MODEL } from '../types'
+
+/**
+ * Localized text - either a simple string or object with language codes
+ */
+type LocalizedText = string | Record<string, string>
+
+// Auth provider config from product.json
+interface AuthProviderConfig {
+  type: string
+  displayName: LocalizedText
+  description: LocalizedText
+  icon: string
+  iconBgColor: string
+  recommended: boolean
+  enabled: boolean
+}
 import { CheckCircle2, XCircle, ArrowLeft, Eye, EyeOff } from '../components/icons/ToolIcons'
 import { Header } from '../components/layout/Header'
 import { McpServerList } from '../components/settings/McpServerList'
 import { useTranslation, setLanguage, getCurrentLanguage, SUPPORTED_LOCALES, type LocaleCode } from '../i18n'
+import { Loader2, LogOut, Plus, Check, Globe, Key, MessageSquare, type LucideIcon, RefreshCw, ChevronDown, Edit2, Trash2 } from 'lucide-react'
+
+/**
+ * Get localized text based on current language
+ */
+function getLocalizedText(value: LocalizedText): string {
+  if (typeof value === 'string') {
+    return value
+  }
+  const lang = getCurrentLanguage()
+  return value[lang] || value['en'] || Object.values(value)[0] || ''
+}
+
+// Icon mapping for dynamic rendering
+const ICON_MAP: Record<string, LucideIcon> = {
+  globe: Globe,
+  key: Key,
+  'message-square': MessageSquare,
+}
+
+// Get icon component by name
+function getIconComponent(iconName: string): LucideIcon {
+  return ICON_MAP[iconName] || Globe
+}
 
 // Remote access status type
 interface RemoteAccessStatus {
@@ -34,19 +75,44 @@ export function SettingsPage() {
   const { t } = useTranslation()
   const { config, setConfig, goBack } = useAppStore()
 
-  // Local state for editing
-  const [apiKey, setApiKey] = useState(config?.api?.apiKey || '')
-  const [apiUrl, setApiUrl] = useState(config?.api?.apiUrl || '')
-  const [provider, setProvider] = useState(config?.api?.provider || 'anthropic')
-  const [model, setModel] = useState(config?.api?.model || DEFAULT_MODEL)
+  // AI Source state
+  const [currentSource, setCurrentSource] = useState<AISourceType>(config?.aiSources?.current || 'custom')
+  const [showCustomApiForm, setShowCustomApiForm] = useState(false)
+
+  // OAuth providers state (dynamic from product.json)
+  const [authProviders, setAuthProviders] = useState<AuthProviderConfig[]>([])
+  const [loginState, setLoginState] = useState<{
+    provider: string
+    status: string
+    userCode?: string
+    verificationUri?: string
+  } | null>(null)
+  const [loggingOutProvider, setLoggingOutProvider] = useState<string | null>(null)
+
+  // Custom API local state for editing
+  const [apiKey, setApiKey] = useState(config?.aiSources?.custom?.apiKey || config?.api?.apiKey || '')
+  const [apiUrl, setApiUrl] = useState(config?.aiSources?.custom?.apiUrl || config?.api?.apiUrl || '')
+  const [provider, setProvider] = useState(config?.aiSources?.custom?.provider || config?.api?.provider || 'anthropic')
+  const [model, setModel] = useState(config?.aiSources?.custom?.model || config?.api?.model || DEFAULT_MODEL)
   const [theme, setTheme] = useState<ThemeMode>(config?.appearance?.theme || 'system')
+
+  // Custom API multi-config support
+  const [editingKey, setEditingKey] = useState<string | null>(null) // null = creating new, or 'custom' = default
+  const [customName, setCustomName] = useState('') // Display name for the config
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
   // Custom model toggle: enable by default if current model is not in preset list
   const [useCustomModel, setUseCustomModel] = useState(() => {
-    const currentModel = config?.api?.model || DEFAULT_MODEL
+    const currentModel = config?.aiSources?.custom?.model || config?.api?.model || DEFAULT_MODEL
     return !AVAILABLE_MODELS.some(m => m.id === currentModel)
   })
 
   // Connection status
+  const [fetchedModels, setFetchedModels] = useState<string[]>(
+    (config?.aiSources?.custom?.availableModels as string[]) || []
+  )
+  const [isFetchingModels, setIsFetchingModels] = useState(false)
+
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{
     valid: boolean
@@ -66,10 +132,47 @@ export function SettingsPage() {
 
   // System settings state
   const [autoLaunch, setAutoLaunch] = useState(config?.system?.autoLaunch || false)
-  const [minimizeToTray, setMinimizeToTray] = useState(config?.system?.minimizeToTray || false)
 
   // API Key visibility state
   const [showApiKey, setShowApiKey] = useState(false)
+
+  // App version state
+  const [appVersion, setAppVersion] = useState<string>('')
+
+  // Update check state
+  const [updateStatus, setUpdateStatus] = useState<{
+    checking: boolean
+    hasUpdate: boolean
+    upToDate: boolean
+    version?: string
+  }>({ checking: false, hasUpdate: false, upToDate: false })
+
+  // Load app version
+  useEffect(() => {
+    api.getVersion().then((result) => {
+      if (result.success && result.data) {
+        setAppVersion(result.data)
+      }
+    })
+  }, [])
+
+  // Listen for update status
+  useEffect(() => {
+    const unsubscribe = api.onUpdaterStatus((data) => {
+      if (data.status === 'checking') {
+        setUpdateStatus({ checking: true, hasUpdate: false, upToDate: false })
+      } else if (data.status === 'not-available') {
+        setUpdateStatus({ checking: false, hasUpdate: false, upToDate: true })
+      } else if (data.status === 'manual-download' || data.status === 'available' || data.status === 'downloaded') {
+        setUpdateStatus({ checking: false, hasUpdate: true, upToDate: false, version: data.version })
+      } else if (data.status === 'error') {
+        setUpdateStatus({ checking: false, hasUpdate: false, upToDate: false })
+      } else {
+        setUpdateStatus(prev => ({ ...prev, checking: false }))
+      }
+    })
+    return () => unsubscribe()
+  }, [])
 
   // Load remote access status
   useEffect(() => {
@@ -85,6 +188,47 @@ export function SettingsPage() {
     }
   }, [])
 
+  // Load auth providers and refresh AI sources config
+  useEffect(() => {
+    // Load available auth providers from product.json
+    api.authGetProviders().then((result) => {
+      if (result.success && result.data) {
+        setAuthProviders(result.data as AuthProviderConfig[])
+      }
+    })
+
+    // Refresh AI sources config
+    api.refreshAISourcesConfig().then((result) => {
+      if (result.success) {
+        api.getConfig().then((configResult) => {
+          if (configResult.success && configResult.data) {
+            setConfig(configResult.data as HaloConfig)
+          }
+        })
+      }
+    })
+
+    // Listen for auth login progress
+    const unsubscribe = api.onAuthLoginProgress((data: { provider: string; status: string }) => {
+      setLoginState(data)
+      if (data.status === 'completed' || data.status === 'failed') {
+        // Reload config after login completes
+        setTimeout(() => {
+          api.getConfig().then((configResult) => {
+            if (configResult.success && configResult.data) {
+              setConfig(configResult.data as HaloConfig)
+            }
+          })
+          setLoginState(null)
+        }, 500)
+      }
+    })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
   // Load system settings
   useEffect(() => {
     loadSystemSettings()
@@ -92,15 +236,9 @@ export function SettingsPage() {
 
   const loadSystemSettings = async () => {
     try {
-      const [autoLaunchRes, minimizeRes] = await Promise.all([
-        api.getAutoLaunch(),
-        api.getMinimizeToTray()
-      ])
+      const autoLaunchRes = await api.getAutoLaunch()
       if (autoLaunchRes.success) {
         setAutoLaunch(autoLaunchRes.data as boolean)
-      }
-      if (minimizeRes.success) {
-        setMinimizeToTray(minimizeRes.data as boolean)
       }
     } catch (error) {
       console.error('[Settings] Failed to load system settings:', error)
@@ -117,10 +255,8 @@ export function SettingsPage() {
   }, [remoteStatus?.enabled, remoteStatus?.tunnel.url])
 
   const loadRemoteStatus = async () => {
-    console.log('[Settings] loadRemoteStatus called')
     try {
       const response = await api.getRemoteStatus()
-      console.log('[Settings] getRemoteStatus response:', response)
       if (response.success && response.data) {
         setRemoteStatus(response.data as RemoteAccessStatus)
       }
@@ -130,36 +266,30 @@ export function SettingsPage() {
   }
 
   const loadQRCode = async () => {
-    const response = await api.getRemoteQRCode(true) // Include token
+    const response = await api.getRemoteQRCode(false) // URL only, no token
     if (response.success && response.data) {
       setQrCode((response.data as any).qrCode)
     }
   }
 
   const handleToggleRemote = async () => {
-    console.log('[Settings] handleToggleRemote called, current status:', remoteStatus?.enabled)
-
     if (remoteStatus?.enabled) {
       // Disable
-      console.log('[Settings] Disabling remote access...')
       const response = await api.disableRemoteAccess()
-      console.log('[Settings] Disable response:', response)
-      setRemoteStatus(null)
-      setQrCode(null)
+      if (response.success) {
+        setRemoteStatus(null)
+        setQrCode(null)
+      }
     } else {
       // Enable
-      console.log('[Settings] Enabling remote access...')
       setIsEnablingRemote(true)
       try {
         const response = await api.enableRemoteAccess()
-        console.log('[Settings] Enable response:', response)
         if (response.success && response.data) {
           setRemoteStatus(response.data as RemoteAccessStatus)
-        } else {
-          console.error('[Settings] Enable failed:', response.error)
         }
-      } catch (error) {
-        console.error('[Settings] Enable error:', error)
+      } catch {
+        // Enable failed silently
       } finally {
         setIsEnablingRemote(false)
       }
@@ -216,51 +346,324 @@ export function SettingsPage() {
     }
   }
 
-  // Handle minimize to tray change
-  const handleMinimizeToTrayChange = async (enabled: boolean) => {
-    setMinimizeToTray(enabled)
-    try {
-      await api.setMinimizeToTray(enabled)
-    } catch (error) {
-      console.error('[Settings] Failed to set minimize to tray:', error)
-      setMinimizeToTray(!enabled) // Revert on error
-    }
-  }
-
   // Handle MCP servers save
   const handleMcpServersSave = async (servers: McpServersConfig) => {
     await api.setConfig({ mcpServers: servers })
     setConfig({ ...config, mcpServers: servers } as HaloConfig)
   }
 
-  // Handle save - just save config without validation
-  const handleSave = async () => {
+  // Handle source switch
+  const handleSwitchSource = async (source: AISourceType) => {
+    setCurrentSource(source)
+    const newConfig = {
+      aiSources: {
+        ...config?.aiSources,
+        current: source
+      }
+    }
+    await api.setConfig(newConfig)
+    setConfig({ ...config, ...newConfig } as HaloConfig)
+  }
+
+  // Handle OAuth login (generic - works for any provider)
+  const handleOAuthLogin = async (providerType: string) => {
+    try {
+      setLoginState({ provider: providerType, status: t('Starting login...') })
+      const result = await api.authStartLogin(providerType)
+      if (!result.success) {
+        console.error('[Settings] OAuth login start failed:', result.error)
+        setLoginState(null)
+        return
+      }
+
+      // Get state and device code info from start result
+      const { state, userCode, verificationUri } = result.data as {
+        loginUrl: string
+        state: string
+        userCode?: string
+        verificationUri?: string
+      }
+
+      // Update login state with device code info if available
+      setLoginState({
+        provider: providerType,
+        status: userCode ? t('Enter the code in your browser') : t('Waiting for login...'),
+        userCode,
+        verificationUri
+      })
+
+      // Complete login - this polls for the token until user completes login
+      const completeResult = await api.authCompleteLogin(providerType, state)
+      if (!completeResult.success) {
+        console.error('[Settings] OAuth login complete failed:', completeResult.error)
+        setLoginState(null)
+        return
+      }
+
+      // Success! Reload config
+      const configResult = await api.getConfig()
+      if (configResult.success && configResult.data) {
+        setConfig(configResult.data as HaloConfig)
+        setCurrentSource(providerType as AISourceType)
+      }
+      setLoginState(null)
+    } catch (err) {
+      console.error('[Settings] OAuth login error:', err)
+      setLoginState(null)
+    }
+  }
+
+  // Handle OAuth logout (generic - works for any provider)
+  const handleOAuthLogout = async (providerType: string) => {
+    try {
+      setLoggingOutProvider(providerType)
+      await api.authLogout(providerType)
+      // Reload config
+      const configResult = await api.getConfig()
+      if (configResult.success && configResult.data) {
+        setConfig(configResult.data as HaloConfig)
+        // Switch to custom if available
+        if (config?.aiSources?.custom?.apiKey) {
+          setCurrentSource('custom')
+        }
+      }
+    } catch (err) {
+      console.error('[Settings] OAuth logout error:', err)
+    } finally {
+      setLoggingOutProvider(null)
+    }
+  }
+
+  // Handle OAuth model change (generic - works for any provider)
+  const handleOAuthModelChange = async (providerType: string, modelId: string) => {
+    const providerConfig = config?.aiSources?.[providerType] as OAuthSourceConfig | undefined
+    if (!providerConfig) return
+
+    const newConfig = {
+      aiSources: {
+        ...config?.aiSources,
+        [providerType]: {
+          ...providerConfig,
+          model: modelId
+        }
+      }
+    }
+    await api.setConfig(newConfig)
+    setConfig({ ...config, ...newConfig } as HaloConfig)
+  }
+
+  // Handle save Custom API - save both legacy api and aiSources.custom
+  const handleSaveCustomApi = async () => {
     setIsValidating(true)
     setValidationResult(null)
 
     try {
-      // Save API config directly
-      const apiConfig = {
-        api: {
+      const isDefault = editingKey === 'custom' || (!editingKey && !config?.aiSources?.custom?.apiKey && !config?.aiSources?.['custom_']);
+
+      let targetKey = editingKey;
+      let newId = (config?.aiSources?.[editingKey || ''] as any)?.id;
+
+      if (!targetKey) {
+        // Creating new
+        if (isDefault && !config?.aiSources?.custom?.apiKey) {
+          targetKey = 'custom'; // First one is always default for back-compat
+        } else {
+          newId = uuidv4();
+          targetKey = `custom_${newId}`;
+        }
+      }
+
+      // Prepare custom config object
+      const customConfig: CustomSourceConfig = {
+        id: newId,
+        name: customName || (targetKey === 'custom' ? t('Default API') : t('Custom API')),
+        type: 'custom',
+        provider: provider as any,
+        apiKey,
+        apiUrl,
+        model,
+        availableModels: fetchedModels
+      }
+
+      const updates: Partial<HaloConfig> = {
+        aiSources: {
+          ...config?.aiSources,
+          current: targetKey as AISourceType,
+          [targetKey]: customConfig
+        }
+      }
+
+      // If we are updating the default 'custom' key, also update legacy api field for back-compat
+      if (targetKey === 'custom') {
+        updates.api = {
           provider: provider as any,
           apiKey,
           apiUrl,
-          model
+          model,
+          availableModels: fetchedModels
         }
       }
-      await api.setConfig(apiConfig)
-      setConfig({ ...config, ...apiConfig } as HaloConfig)
+
+      await api.setConfig(updates)
+      setConfig({ ...config, ...updates } as HaloConfig)
+      setCurrentSource(targetKey as AISourceType)
       setValidationResult({ valid: true, message: t('Saved') })
-    } catch (error) {
+
+      // Close form
+      setShowCustomApiForm(false)
+      setEditingKey(null)
+    } catch {
       setValidationResult({ valid: false, message: t('Save failed') })
     } finally {
       setIsValidating(false)
     }
   }
 
+  // Handle add new custom source
+  const handleAddCustom = () => {
+    setEditingKey(null) // null = new
+    setProvider('anthropic')
+    setApiKey('')
+    setApiUrl('https://api.anthropic.com')
+    setModel(DEFAULT_MODEL)
+    setFetchedModels([])
+    setCustomName('')
+    setShowCustomApiForm(true)
+    setValidationResult(null)
+  }
+
+  // Handle edit custom source
+  const handleEditCustom = (key: string, source: any) => {
+    const config = source as CustomSourceConfig
+    setEditingKey(key)
+    setProvider(config.provider || 'anthropic')
+    setApiKey(config.apiKey || '')
+    setApiUrl(config.apiUrl || '')
+    setModel(config.model || '')
+    setFetchedModels(config.availableModels || [])
+
+    // Determine name
+    if (config.name) {
+      setCustomName(config.name)
+    } else {
+      setCustomName(key === 'custom' ? t('Default API') : t('Custom API'))
+    }
+
+    setShowCustomApiForm(true)
+    setValidationResult(null)
+  }
+
+  // Handle delete custom source
+  const handleDeleteCustom = async (key: string) => {
+    const newAiSources = { ...config?.aiSources }
+    delete newAiSources[key]
+
+    // If deleting current source, switch to fallback
+    if (config?.aiSources?.current === key) {
+      const firstRemain = Object.keys(newAiSources).find(k => k.startsWith('custom') && k !== 'current')
+      newAiSources.current = (firstRemain || 'custom') as AISourceType
+    }
+
+    const newConfig = { ...config, aiSources: newAiSources } as HaloConfig
+    await api.setConfig(newConfig)
+    setConfig(newConfig)
+    setShowDeleteConfirm(false)
+  }
+
+
+  // Fetch models from custom API
+  const fetchModels = async () => {
+    if (!apiUrl) {
+      setValidationResult({ valid: false, message: t('Please enter API URL first') })
+      return
+    }
+    if (!apiKey) {
+      setValidationResult({ valid: false, message: t('Please enter API Key first') })
+      return
+    }
+
+    setIsFetchingModels(true)
+    setValidationResult(null)
+
+    try {
+      // Construct models endpoint
+      let baseUrl = apiUrl
+      if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1)
+      if (baseUrl.endsWith('/chat/completions')) baseUrl = baseUrl.slice(0, -17)
+      if (baseUrl.endsWith('/v1')) baseUrl = baseUrl.slice(0, -3) // Some might just want base
+
+      // Try multiple common model endpoints if one fails? 
+      // Standard is {base}/v1/models. If user gave {base}/v1, we use {base}/v1/models.
+      // If user gave {base}/v1/chat/completions, we use {base}/v1/models.
+
+      // Let's rely on what the user gave. 
+      // Case 1: http://localhost:8000/v1/chat/completions -> http://localhost:8000/v1/models
+      // Case 2: http://localhost:8000/v1 -> http://localhost:8000/v1/models
+      // Case 3: http://localhost:8000 -> http://localhost:8000/models OR http://localhost:8000/v1/models?
+
+      // Heuristic:
+      // Remove trailing slash
+      baseUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl
+
+      // Remove /chat/completions suffix
+      if (baseUrl.endsWith('/chat/completions')) {
+        baseUrl = baseUrl.replace(/\/chat\/completions$/, '')
+      }
+
+      const url = `${baseUrl}/models`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch models (${response.status})`)
+      }
+
+      const data = await response.json()
+
+      // OpenAI compatible format: { data: [{ id: 'model-id', ... }] }
+      if (data.data && Array.isArray(data.data)) {
+        const models = data.data
+          .map((m: any) => m.id)
+          .filter((id: any) => typeof id === 'string')
+          .sort()
+
+        if (models.length === 0) {
+          throw new Error('No models found in response')
+        }
+
+        setFetchedModels(models)
+
+        // Auto-select first model if current one is not in list or is generic
+        if (models.length > 0 && (!model || model === 'gpt-4o-mini' || model === 'deepseek-chat')) {
+          setModel(models[0])
+        }
+
+        setValidationResult({ valid: true, message: t('Models fetched successfully') })
+      } else {
+        throw new Error('Invalid API response format')
+      }
+    } catch {
+      setValidationResult({ valid: false, message: t('Failed to fetch models') })
+    } finally {
+      setIsFetchingModels(false)
+    }
+  }
+
   // Handle back - return to previous view (not always home)
   const handleBack = () => {
     goBack()
+  }
+
+  // Handle check for updates
+  const handleCheckForUpdates = async () => {
+    setUpdateStatus({ checking: true, hasUpdate: false, upToDate: false })
+    await api.checkForUpdates()
   }
 
   return (
@@ -283,196 +686,597 @@ export function SettingsPage() {
       {/* Content */}
       <main className="flex-1 overflow-auto p-6">
         <div className="max-w-2xl mx-auto space-y-6">
-          {/* AI Connection Section */}
+          {/* AI Model Section */}
           <section className="bg-card rounded-xl border border-border p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-[#da7756]/20 flex items-center justify-center">
-                <svg className="w-5 h-5 text-[#da7756]" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M4.709 15.955l4.72-2.647.08-.08 2.726-1.529.08-.08 6.206-3.48a.25.25 0 00.125-.216V6.177a.25.25 0 00-.375-.217l-6.206 3.48-.08.08-2.726 1.53-.08.079-4.72 2.647a.25.25 0 00-.125.217v1.746c0 .18.193.294.354.216h.001zm13.937-3.584l-4.72 2.647-.08.08-2.726 1.529-.08.08-6.206 3.48a.25.25 0 00-.125.216v1.746a.25.25 0 00.375.217l6.206-3.48.08-.08 2.726-1.53.08-.079 4.72-2.647a.25.25 0 00.125-.217v-1.746a.25.25 0 00-.375-.216z" />
-                </svg>
-              </div>
-              <div>
-                <h2 className="text-lg font-medium">
-                  {provider === 'anthropic'
-                    ? t('Claude (Recommended)')
-                    : t('OpenAI Compatible')}
-                </h2>
-                <p className="text-xs text-muted-foreground">{t('AI Connection Configuration')}</p>
-              </div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium">{t('AI Model')}</h2>
             </div>
 
             <div className="space-y-4">
-              {/* Provider */}
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">Provider</label>
-                <select
-                  value={provider}
-                  onChange={(e) => {
-                    const next = e.target.value as any
-                    setProvider(next)
-                    setValidationResult(null)
-                    // sensible defaults when switching
-                    if (next === 'anthropic') {
-                      if (!apiUrl || apiUrl.includes('openai')) setApiUrl('https://api.anthropic.com')
-                      if (!model || !model.startsWith('claude-')) {
-                        setModel(DEFAULT_MODEL)
-                        setUseCustomModel(false)
-                      }
-                    } else if (next === 'openai') {
-                      if (!apiUrl || apiUrl.includes('anthropic')) setApiUrl('https://api.openai.com')
-                      if (!model || model.startsWith('claude-')) setModel('gpt-4o-mini')
-                    }
-                  }}
-                  className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+              {/* OAuth Providers - Dynamic rendering */}
+              {authProviders
+                .filter(p => p.type !== 'custom' && p.enabled)
+                .map((provider) => {
+                  const providerConfig = config?.aiSources?.[provider.type] as OAuthSourceConfig | undefined
+                  const isLoggedIn = providerConfig?.loggedIn === true
+                  const isLoggingIn = loginState?.provider === provider.type
+                  const isLoggingOut = loggingOutProvider === provider.type
+                  const IconComponent = getIconComponent(provider.icon)
+
+                  if (isLoggedIn) {
+                    // Logged in card
+                    return (
+                      <div
+                        key={provider.type}
+                        className={`p-4 rounded-lg border-2 transition-all cursor-pointer ${currentSource === provider.type
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border hover:border-muted-foreground/50'
+                          }`}
+                        onClick={() => handleSwitchSource(provider.type)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            {/* Provider Icon */}
+                            <div
+                              className="w-10 h-10 rounded-lg flex items-center justify-center"
+                              style={{ backgroundColor: `${provider.iconBgColor}20` }}
+                            >
+                              <IconComponent
+                                className="w-6 h-6"
+                                style={{ color: provider.iconBgColor }}
+                              />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{getLocalizedText(provider.displayName)}</span>
+                                {currentSource === provider.type && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary flex items-center gap-1">
+                                    <Check className="w-3 h-3" />
+                                    {t('Active')}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                {providerConfig?.user?.name || t('Logged in')}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleOAuthLogout(provider.type)
+                            }}
+                            disabled={isLoggingOut}
+                            className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
+                            title={t('Logout')}
+                          >
+                            {isLoggingOut ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <LogOut className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Model selector for this provider */}
+                        {currentSource === provider.type && (
+                          <div className="mt-3 pt-3 border-t border-border">
+                            <label className="block text-xs text-muted-foreground mb-1.5">{t('Model')}</label>
+                            <select
+                              value={providerConfig?.model || ''}
+                              onChange={(e) => handleOAuthModelChange(provider.type, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                            >
+                              {(providerConfig?.availableModels || []).map((modelId) => {
+                                const displayName = providerConfig?.modelNames?.[modelId] || modelId
+                                return (
+                                  <option key={modelId} value={modelId}>
+                                    {displayName}
+                                  </option>
+                                )
+                              })}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  } else if (isLoggingIn) {
+                    // Logging in progress
+                    return (
+                      <div key={provider.type} className="p-4 rounded-lg border border-border bg-muted/30">
+                        <div className="flex items-center gap-3">
+                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                          <div>
+                            <span className="font-medium">{t('Logging in...')}</span>
+                            <p className="text-xs text-muted-foreground">{loginState?.status}</p>
+                          </div>
+                        </div>
+
+                        {/* Device code display for OAuth Device Code flow */}
+                        {loginState?.userCode && loginState?.verificationUri && (
+                          <div className="mt-4 p-4 bg-background border border-border rounded-lg">
+                            <p className="text-xs text-muted-foreground mb-1">
+                              {t('Visit this URL to login:')}
+                            </p>
+                            <a
+                              href={loginState.verificationUri}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline font-mono text-xs"
+                            >
+                              {loginState.verificationUri}
+                            </a>
+                            <p className="text-xs text-muted-foreground mt-3 mb-1">
+                              {t('Enter this code:')}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <code className="text-lg font-bold font-mono tracking-widest bg-muted px-3 py-1 rounded border border-border select-all">
+                                {loginState.userCode}
+                              </code>
+                              <button
+                                onClick={() => navigator.clipboard.writeText(loginState.userCode!)}
+                                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                                title={t('Copy code')}
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                                </svg>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  } else {
+                    // Not logged in - show add button
+                    return (
+                      <button
+                        key={provider.type}
+                        onClick={() => handleOAuthLogin(provider.type)}
+                        className="w-full p-4 rounded-lg border-2 border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all flex items-center gap-3"
+                      >
+                        <div
+                          className="w-10 h-10 rounded-lg flex items-center justify-center"
+                          style={{ backgroundColor: `${provider.iconBgColor}10` }}
+                        >
+                          <Plus className="w-5 h-5" style={{ color: provider.iconBgColor }} />
+                        </div>
+                        <div className="text-left">
+                          <span className="font-medium">{t('Add')} {getLocalizedText(provider.displayName)}</span>
+                          <p className="text-xs text-muted-foreground">{getLocalizedText(provider.description)}</p>
+                        </div>
+                      </button>
+                    )
+                  }
+                })}
+
+              {/* Custom API Sources List */}
+              {Object.keys(config?.aiSources || {})
+                .filter(key => key === 'custom' || key.startsWith('custom_') || (config?.aiSources?.[key] as any)?.type === 'custom')
+                .sort((a, b) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
+                .map(key => {
+                  const sourceConfig = config?.aiSources?.[key] as CustomSourceConfig
+                  const isEditing = showCustomApiForm && editingKey === key
+                  const isActive = currentSource === key
+
+                  if (!sourceConfig || (!sourceConfig.apiKey && !isEditing)) return null
+
+                  return (
+                    <div
+                      key={key}
+                      className={`rounded-lg border-2 transition-all ${isActive
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:border-muted-foreground/50'
+                        }`}
+                    >
+                      {/* Card Header / Summary */}
+                      <div
+                        className="p-4 cursor-pointer flex items-center justify-between"
+                        onClick={() => handleSwitchSource(key as AISourceType)}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-lg bg-[#da7756]/20 flex items-center justify-center">
+                            <svg className="w-6 h-6 text-[#da7756]" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M4.709 15.955l4.72-2.647.08-.08 2.726-1.529.08-.08 6.206-3.48a.25.25 0 00.125-.216V6.177a.25.25 0 00-.375-.217l-6.206 3.48-.08.08-2.726 1.53-.08.079-4.72 2.647a.25.25 0 00-.125.217v1.746c0 .18.193.294.354.216h.001zm13.937-3.584l-4.72 2.647-.08.08-2.726 1.529-.08.08-6.206 3.48a.25.25 0 00-.125.216v1.746a.25.25 0 00.375.217l6.206-3.48.08-.08 2.726-1.53.08-.079 4.72-2.647a.25.25 0 00.125-.217v-1.746a.25.25 0 00-.375-.216z" />
+                            </svg>
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">
+                                {sourceConfig.name || (sourceConfig.provider === 'anthropic' ? 'Claude API' : t('Custom API'))}
+                              </span>
+                              {isActive && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary flex items-center gap-1">
+                                  <Check className="w-3 h-3" />
+                                  {t('Active')}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {/* Show model name */}
+                              {AVAILABLE_MODELS.find(m => m.id === sourceConfig.model)?.name || sourceConfig.model}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleEditCustom(key, sourceConfig)
+                            }}
+                            className="p-2 text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg transition-colors"
+                            title={t('Edit')}
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          {/* Allow deleting any custom source except maybe if it's the only one? Or just allow deleting */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (window.confirm(t('Are you sure you want to delete this configuration?'))) {
+                                handleDeleteCustom(key)
+                              }
+                            }}
+                            className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
+                            title={t('Delete')}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Edit Form (Expanded) */}
+                      {isEditing && (
+                        <div className="p-4 pt-0 border-t border-border mt-4" onClick={(e) => e.stopPropagation()}>
+                          <div className="space-y-4 pt-4">
+                            {/* Name */}
+                            <div>
+                              <label className="block text-xs text-muted-foreground mb-1.5">{t('Name')}</label>
+                              <input
+                                type="text"
+                                value={customName}
+                                onChange={(e) => setCustomName(e.target.value)}
+                                placeholder={t('My Custom API')}
+                                className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                              />
+                            </div>
+
+                            {/* Provider */}
+                            <div>
+                              <label className="block text-xs text-muted-foreground mb-1.5">Provider</label>
+                              <select
+                                value={provider}
+                                onChange={(e) => {
+                                  const next = e.target.value as any
+                                  setProvider(next)
+                                  setValidationResult(null)
+                                  if (next === 'anthropic') {
+                                    if (!apiUrl || apiUrl.includes('openai')) setApiUrl('https://api.anthropic.com')
+                                    if (!model || !model.startsWith('claude-')) {
+                                      setModel(DEFAULT_MODEL)
+                                      setUseCustomModel(false)
+                                    }
+                                  } else if (next === 'openai') {
+                                    if (!apiUrl || apiUrl.includes('anthropic')) setApiUrl('https://api.openai.com')
+                                    if (!model || model.startsWith('claude-')) setModel('gpt-4o-mini')
+                                  }
+                                }}
+                                className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                              >
+                                <option value="anthropic">{t('Claude (Recommended)')}</option>
+                                <option value="openai">{t('OpenAI Compatible')}</option>
+                              </select>
+                            </div>
+
+                            {/* API Key */}
+                            <div>
+                              <label className="block text-xs text-muted-foreground mb-1.5">API Key</label>
+                              <div className="relative">
+                                <input
+                                  type={showApiKey ? 'text' : 'password'}
+                                  value={apiKey}
+                                  onChange={(e) => setApiKey(e.target.value)}
+                                  placeholder={provider === 'openai' ? 'sk-xxxxxxxxxxxxx' : 'sk-ant-xxxxxxxxxxxxx'}
+                                  className="w-full px-3 py-1.5 pr-10 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowApiKey(!showApiKey)}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                  {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* API URL */}
+                            <div>
+                              <label className="block text-xs text-muted-foreground mb-1.5">API URL</label>
+                              <input
+                                type="text"
+                                value={apiUrl}
+                                onChange={(e) => setApiUrl(e.target.value)}
+                                placeholder="https://api.anthropic.com"
+                                className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                              />
+                            </div>
+
+                            {/* Model */}
+                            <div>
+                              <label className="block text-xs text-muted-foreground mb-1.5">{t('Model')}</label>
+                              {provider === 'anthropic' && !useCustomModel ? (
+                                <select
+                                  value={model}
+                                  onChange={(e) => setModel(e.target.value)}
+                                  className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                                >
+                                  {AVAILABLE_MODELS.map((m) => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div className="flex gap-2">
+                                  <div className="relative flex-1">
+                                    {fetchedModels.length > 0 ? (
+                                      <select
+                                        value={model}
+                                        onChange={(e) => setModel(e.target.value)}
+                                        className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors appearance-none"
+                                      >
+                                        {!fetchedModels.includes(model) && model && (
+                                          <option value={model}>{model}</option>
+                                        )}
+                                        {fetchedModels.map((m) => (
+                                          <option key={m} value={m}>
+                                            {m}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={model}
+                                        onChange={(e) => setModel(e.target.value)}
+                                        placeholder={provider === 'openai' ? "gpt-4o-mini" : "claude-sonnet"}
+                                        className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                                      />
+                                    )}
+                                    {fetchedModels.length > 0 && (
+                                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground">
+                                        <ChevronDown className="w-3.5 h-3.5" />
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={fetchModels}
+                                    disabled={isFetchingModels || !apiKey || !apiUrl}
+                                    className="px-2.5 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground rounded-lg border border-border transition-colors disabled:opacity-50"
+                                    title={t('Fetch available models')}
+                                  >
+                                    <RefreshCw className={`w-3.5 h-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Save/Cancel button */}
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={handleSaveCustomApi}
+                                disabled={isValidating || !apiKey}
+                                className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                              >
+                                {isValidating ? t('Saving...') : t('Save')}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setShowCustomApiForm(false)
+                                  setEditingKey(null)
+                                }}
+                                className="px-4 py-1.5 text-sm text-muted-foreground hover:bg-secondary rounded-lg transition-colors"
+                              >
+                                {t('Cancel')}
+                              </button>
+                              {validationResult && (
+                                <span className={`text-xs flex items-center gap-1 ${validationResult.valid ? 'text-green-500' : 'text-red-500'}`}>
+                                  {validationResult.valid ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                                  {validationResult.message}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
+              {/* Add Custom API Button (Always visible at bottom) */}
+              {!showCustomApiForm || editingKey !== null ? (
+                <button
+                  onClick={handleAddCustom}
+                  className="w-full p-4 rounded-lg border-2 border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all flex items-center gap-3"
                 >
-                  <option value="anthropic">{t('Claude (Recommended)')}</option>
-                  <option value="openai">{t('OpenAI Compatible')}</option>
-                </select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {provider === 'openai'
-                    ? t('Support OpenAI/compatible models via local protocol conversion')
-                    : t('Connect directly to Anthropic official or compatible proxy')}
-                </p>
-              </div>
+                  <div className="w-10 h-10 rounded-lg bg-[#da7756]/10 flex items-center justify-center">
+                    <Plus className="w-5 h-5 text-[#da7756]" />
+                  </div>
+                  <div className="text-left">
+                    <span className="font-medium">{t('Add Custom API')}</span>
+                    <p className="text-xs text-muted-foreground">{t('Connect to OpenAI, Local LLMs, etc.')}</p>
+                  </div>
+                </button>
+              ) : (
+                /* Creating New Form */
+                <div className="p-4 rounded-lg border border-border space-y-4">
+                  <h3 className="font-medium">{t('Configure New API')}</h3>
 
-              {/* API Key */}
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">API Key</label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={provider === 'openai' ? 'sk-xxxxxxxxxxxxx' : 'sk-ant-xxxxxxxxxxxxx'}
-                    className="w-full px-4 py-2 pr-12 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
-                    title={showApiKey ? t('Hide API Key') : t('Show API Key')}
-                  >
-                    {showApiKey ? (
-                      <EyeOff className="w-4 h-4" />
-                    ) : (
-                      <Eye className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* API URL */}
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">API URL</label>
-                <input
-                  type="text"
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder={provider === 'openai' ? 'BASE_URL/v1/chat/completions or BASE_URL/v1/responses' : 'https://api.anthropic.com'}
-                  className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-                />
-                {provider === 'openai' && apiUrl && !apiUrl.endsWith('/chat/completions') && !apiUrl.endsWith('responses') && (
-                  <p className="mt-1 text-xs text-destructive">
-                    {t('URL must end with /v1/chat/completions or /v1/responses')}
-                  </p>
-                )}
-              </div>
-
-              {/* Model Selection */}
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">{t('Model')}</label>
-                {provider === 'anthropic' ? (
-                  <>
-                    {useCustomModel ? (
+                  {/* Reuse Form Logic - Ideally this should be a component, but copying for now to ensure speed */}
+                  <div className="space-y-4 pt-2">
+                    {/* Name */}
+                    <div>
+                      <label className="block text-xs text-muted-foreground mb-1.5">{t('Name')}</label>
                       <input
                         type="text"
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        placeholder="claude-sonnet-4-5-20250929"
-                        className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                        value={customName}
+                        onChange={(e) => setCustomName(e.target.value)}
+                        placeholder={t('My Custom API')}
+                        className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
                       />
-                    ) : (
-                      <select
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-                      >
-                        {AVAILABLE_MODELS.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">
-                        {useCustomModel
-                          ? t('Enter official Claude model name')
-                          : AVAILABLE_MODELS.find((m) => m.id === model)?.description}
-                      </span>
-                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground/70 cursor-pointer hover:text-muted-foreground transition-colors">
-                        <input
-                          type="checkbox"
-                          checked={useCustomModel}
-                          onChange={(e) => {
-                            setUseCustomModel(e.target.checked)
-                            if (!e.target.checked) {
-                              if (!AVAILABLE_MODELS.some(m => m.id === model)) {
-                                setModel(DEFAULT_MODEL)
-                              }
-                            }
-                          }}
-                          className="w-3 h-3 rounded border-border"
-                        />
-                        {t('Custom')}
-                      </label>
                     </div>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      type="text"
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      placeholder="gpt-4o-mini / deepseek-chat"
-                      className="w-full px-4 py-2 bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {t('Enter OpenAI compatible service model name')}
-                    </p>
-                  </>
-                )}
-              </div>
 
-              {/* Save */}
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={handleSave}
-                  disabled={isValidating || !apiKey}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
-                >
-                  {isValidating ? t('Saving...') : t('Save')}
-                </button>
+                    {/* Provider */}
+                    <div>
+                      <label className="block text-xs text-muted-foreground mb-1.5">Provider</label>
+                      <select
+                        value={provider}
+                        onChange={(e) => {
+                          const next = e.target.value as any
+                          setProvider(next)
+                          setValidationResult(null)
+                          if (next === 'anthropic') {
+                            if (!apiUrl || apiUrl.includes('openai')) setApiUrl('https://api.anthropic.com')
+                            if (!model || !model.startsWith('claude-')) {
+                              setModel(DEFAULT_MODEL)
+                              setUseCustomModel(false)
+                            }
+                          } else if (next === 'openai') {
+                            if (!apiUrl || apiUrl.includes('anthropic')) setApiUrl('https://api.openai.com')
+                            if (!model || model.startsWith('claude-')) setModel('gpt-4o-mini')
+                          }
+                        }}
+                        className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                      >
+                        <option value="anthropic">{t('Claude (Recommended)')}</option>
+                        <option value="openai">{t('OpenAI Compatible')}</option>
+                      </select>
+                    </div>
 
-                {validationResult && (
-                  <span
-                    className={`text-sm flex items-center gap-1 ${validationResult.valid ? 'text-green-500' : 'text-red-500'
-                      }`}
-                  >
-                    {validationResult.valid ? (
-                      <>
-                        <CheckCircle2 className="w-4 h-4" />
-                        {validationResult.message || t('Saved')}
-                      </>
-                    ) : (
-                      <>
-                        <XCircle className="w-4 h-4" />
-                        {validationResult.message}
-                      </>
-                    )}
-                  </span>
-                )}
-              </div>
+                    {/* API Key */}
+                    <div>
+                      <label className="block text-xs text-muted-foreground mb-1.5">API Key</label>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? 'text' : 'password'}
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          placeholder={provider === 'openai' ? 'sk-xxxxxxxxxxxxx' : 'sk-ant-xxxxxxxxxxxxx'}
+                          className="w-full px-3 py-1.5 pr-10 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* API URL */}
+                    <div>
+                      <label className="block text-xs text-muted-foreground mb-1.5">API URL</label>
+                      <input
+                        type="text"
+                        value={apiUrl}
+                        onChange={(e) => setApiUrl(e.target.value)}
+                        placeholder="https://api.anthropic.com"
+                        className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Model */}
+                    <div>
+                      <label className="block text-xs text-muted-foreground mb-1.5">{t('Model')}</label>
+                      {provider === 'anthropic' && !useCustomModel ? (
+                        <select
+                          value={model}
+                          onChange={(e) => setModel(e.target.value)}
+                          className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                        >
+                          {AVAILABLE_MODELS.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            {fetchedModels.length > 0 ? (
+                              <select
+                                value={model}
+                                onChange={(e) => setModel(e.target.value)}
+                                className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors appearance-none"
+                              >
+                                {!fetchedModels.includes(model) && model && (
+                                  <option value={model}>{model}</option>
+                                )}
+                                {fetchedModels.map((m) => (
+                                  <option key={m} value={m}>
+                                    {m}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={model}
+                                onChange={(e) => setModel(e.target.value)}
+                                placeholder={provider === 'openai' ? "gpt-4o-mini" : "claude-sonnet"}
+                                className="w-full px-3 py-1.5 text-sm bg-input rounded-lg border border-border focus:border-primary focus:outline-none transition-colors"
+                              />
+                            )}
+                            {fetchedModels.length > 0 && (
+                              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground">
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </div>
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={fetchModels}
+                            disabled={isFetchingModels || !apiKey || !apiUrl}
+                            className="px-2.5 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground rounded-lg border border-border transition-colors disabled:opacity-50"
+                            title={t('Fetch available models')}
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Save/Cancel button */}
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleSaveCustomApi}
+                        disabled={isValidating || !apiKey}
+                        className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                      >
+                        {isValidating ? t('Saving...') : t('Save')}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowCustomApiForm(false)
+                          setEditingKey(null)
+                        }}
+                        className="px-4 py-1.5 text-sm text-muted-foreground hover:bg-secondary rounded-lg transition-colors"
+                      >
+                        {t('Cancel')}
+                      </button>
+                      {validationResult && (
+                        <span className={`text-xs flex items-center gap-1 ${validationResult.valid ? 'text-green-500' : 'text-red-500'}`}>
+                          {validationResult.valid ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                          {validationResult.message}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
 
@@ -487,7 +1291,7 @@ export function SettingsPage() {
 
             {/* Info banner */}
             <div className="bg-muted/50 rounded-lg p-3 mb-4 text-sm text-muted-foreground">
-              {t('Current version defaults to full permission mode, AI can freely perform all operations. Future versions will support fine-grained permission control.')}
+              {t('We recommend full trust mode - use natural language to control Halo. UI-based permission settings coming in future versions.')}
             </div>
 
             <div className="space-y-4 opacity-50">
@@ -623,44 +1427,6 @@ export function SettingsPage() {
                   </label>
                 </div>
 
-                {/* Minimize to Tray */}
-                <div className="flex items-center justify-between pt-4 border-t border-border">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{t('Background Daemon')}</p>
-                      <span
-                        className="inline-flex items-center justify-center w-4 h-4 text-xs rounded-full bg-muted text-muted-foreground cursor-help"
-                        title={t('Minimize to system tray when closing window, can be awakened anytime')}
-                      >
-                        ?
-                      </span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      {t('Minimize to {{trayType}} when closing window, instead of exiting the program', {
-                        trayType: window.platform?.isMac ? t('menu bar') : t('system tray')
-                      })}
-                    </p>
-                    <p className="text-xs text-muted-foreground/70 mt-1">
-                      {t('When enabled, you can remotely control anytime, click {{trayType}} icon to awaken', {
-                        trayType: window.platform?.isMac ? t('menu bar') : t('tray')
-                      })}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={minimizeToTray}
-                      onChange={(e) => handleMinimizeToTrayChange(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-secondary rounded-full peer peer-checked:bg-primary transition-colors">
-                      <div
-                        className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${minimizeToTray ? 'translate-x-5' : 'translate-x-0.5'
-                          } mt-0.5`}
-                      />
-                    </div>
-                  </label>
-                </div>
               </div>
             </section>
           )}
@@ -691,7 +1457,8 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* Remote Access Section */}
+          {/* Remote Access Section - Only show in desktop app (not in remote mode) */}
+          {!api.isRemoteMode() && (
           <section className="bg-card rounded-xl border border-border p-6">
             <h2 className="text-lg font-medium mb-4">{t('Remote Access')}</h2>
 
@@ -934,10 +1701,7 @@ export function SettingsPage() {
                         </div>
                         <div className="text-center text-sm">
                           <p className="text-muted-foreground">
-                            {t('Scan the QR code with your phone and enter the password to access')}
-                          </p>
-                          <p className="text-amber-500 text-xs mt-1">
-                            {t('QR code contains password, do not share screenshots with others')}
+                            {t('Scan the QR code with your phone to access')}
                           </p>
                         </div>
                       </div>
@@ -947,15 +1711,36 @@ export function SettingsPage() {
               )}
             </div>
           </section>
+          )}
 
           {/* About Section */}
           <section className="bg-card rounded-xl border border-border p-6">
             <h2 className="text-lg font-medium mb-4">{t('About')}</h2>
 
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between items-center">
                 <span className="text-muted-foreground">{t('Version')}</span>
-                <span>1.0.0</span>
+                <div className="flex items-center gap-3">
+                  <span>{appVersion || '-'}</span>
+                  <button
+                    onClick={handleCheckForUpdates}
+                    disabled={updateStatus.checking}
+                    className="text-xs text-primary hover:text-primary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {updateStatus.checking ? (
+                      <span className="flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {t('Checking...')}
+                      </span>
+                    ) : updateStatus.hasUpdate ? (
+                      <span className="text-emerald-500">{t('New version available')}: {updateStatus.version}</span>
+                    ) : updateStatus.upToDate ? (
+                      <span className="text-muted-foreground">{t('Already up to date')}</span>
+                    ) : (
+                      t('Check for updates')
+                    )}
+                  </button>
+                </div>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">{t('Build')}</span>

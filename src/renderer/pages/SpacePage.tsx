@@ -26,6 +26,7 @@ import { ConversationList } from '../components/chat/ConversationList'
 import { ChatHistoryPanel } from '../components/chat/ChatHistoryPanel'
 import { SpaceIcon } from '../components/icons/ToolIcons'
 import { Header } from '../components/layout/Header'
+import { ModelSelector } from '../components/layout/ModelSelector'
 import { ContentCanvas, CanvasToggleButton } from '../components/canvas'
 import { GitBashWarningBanner } from '../components/setup/GitBashWarningBanner'
 import { api } from '../api'
@@ -35,27 +36,7 @@ import { PanelLeftClose, PanelLeft, X, MessageSquare } from 'lucide-react'
 import { SearchIcon } from '../components/search/SearchIcon'
 import { useSearchShortcuts } from '../hooks/useSearchShortcuts'
 import { useTranslation } from '../i18n'
-// Mobile breakpoint (matches Tailwind sm: 640px)
-const MOBILE_BREAKPOINT = 640
-
-// Hook to detect mobile viewport
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.innerWidth < MOBILE_BREAKPOINT
-  })
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
-    }
-
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
-
-  return isMobile
-}
+import { useIsMobile } from '../hooks/useIsMobile'
 
 export function SpacePage() {
   const { t } = useTranslation()
@@ -86,15 +67,9 @@ export function SpacePage() {
   // Canvas state - use precise selectors to minimize re-renders
   const isCanvasOpen = useCanvasIsOpen()
   const isCanvasMaximized = useCanvasIsMaximized()
-  // Only subscribe to tab count, not entire tabs array (avoid re-render on tab content changes)
-  const canvasTabCount = useCanvasStore(state => state.tabs.length)
   const isCanvasTransitioning = useCanvasStore(state => state.isTransitioning)
   const setCanvasOpen = useCanvasStore(state => state.setOpen)
   const setCanvasMaximized = useCanvasStore(state => state.setMaximized)
-  // Detect if any browser tab is open (native BrowserView)
-  // When browser tabs exist, disable CSS transitions to sync with native view resize
-  // Use selector to compute this inside store subscription (avoids subscribing to full tabs array)
-  const hasBrowserTab = useCanvasStore(state => state.tabs.some(tab => tab.type === 'browser'))
 
   // Mobile detection
   const isMobile = useIsMobile()
@@ -338,8 +313,10 @@ export function SpacePage() {
               </svg>
             </button>
 
-            <SpaceIcon iconId={currentSpace.icon} size={22} />
-            <span className="font-medium text-sm">{currentSpace.isTemp ? 'Halo' : currentSpace.name}</span>
+            <SpaceIcon iconId={currentSpace.icon} size={22} className="flex-shrink-0" />
+            <span className="font-medium text-sm truncate max-w-[100px] sm:max-w-[200px] hidden sm:inline">
+              {currentSpace.isTemp ? 'Halo' : currentSpace.name}
+            </span>
 
             {/* Chat History Panel - integrated in header */}
             {conversations.length > 0 && (
@@ -352,6 +329,8 @@ export function SpacePage() {
                   onDelete={handleDeleteConversation}
                   onRename={handleRenameConversation}
                   spaceName={currentSpace.isTemp ? t('Halo Space') : currentSpace.name}
+                  onToggleSidebar={() => setShowConversationList(!showConversationList)}
+                  isSidebarVisible={showConversationList}
                 />
               </div>
             )}
@@ -371,20 +350,13 @@ export function SpacePage() {
               <span className="hidden sm:inline">{t('New conversation')}</span>
             </button>
 
-            <button
-              onClick={() => setShowConversationList(!showConversationList)}
-              className={`p-1.5 rounded-lg transition-colors ${
-                showConversationList ? 'bg-primary/20 text-primary' : 'hover:bg-secondary'
-              }`}
-              title={t('Sidebar')}
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
-              </svg>
-            </button>
+            {/* Search Icon - hidden on mobile, accessible via shortcut */}
+            <div className="hidden sm:block">
+              <SearchIcon onClick={openSearch} isInSpace={true} />
+            </div>
 
-            {/* Search Icon */}
-            <SearchIcon onClick={openSearch} isInSpace={true} />
+            {/* Model Selector */}
+            <ModelSelector />
 
             <button
               onClick={() => setView('settings')}
@@ -432,20 +404,13 @@ export function SpacePage() {
                 ref={chatContainerRef}
                 className={`
                   flex flex-col min-w-0 relative
-                  ${hasBrowserTab ? '' : 'transition-[border-color] duration-300 ease-out'}
                   ${isCanvasOpen ? 'border-r border-border/60' : 'flex-1 border-r border-transparent'}
-                  ${isCanvasTransitioning ? 'pointer-events-none' : ''}
                 `}
                 style={{
                   width: isCanvasOpen ? dragChatWidth : undefined,
                   flex: isCanvasOpen ? 'none' : '1',
                   minWidth: isCanvasOpen ? chatWidthMin : undefined,
                   maxWidth: isCanvasOpen ? chatWidthMax : undefined,
-                  // Disable transition when browser tab exists (sync with native BrowserView)
-                  transition: (isDraggingChat || hasBrowserTab)
-                    ? 'none'
-                    : 'width 0.3s, flex 0.3s, border-color 0.3s',
-                  willChange: isCanvasTransitioning ? 'width, flex' : 'auto',
                 }}
               >
                 <ChatView isCompact={isCanvasOpen} />
@@ -469,18 +434,10 @@ export function SpacePage() {
             <div
               className={`
                 min-w-0 overflow-hidden
-                ${hasBrowserTab ? '' : 'transition-all duration-300 ease-out'}
                 ${isCanvasOpen || isCanvasMaximized
                   ? 'flex-1 opacity-100'
                   : 'w-0 flex-none opacity-0'}
-                ${isCanvasTransitioning ? 'pointer-events-none' : ''}
               `}
-              style={{
-                willChange: isCanvasTransitioning ? 'width, opacity, transform' : 'auto',
-                transform: isCanvasOpen || isCanvasMaximized ? 'translateX(0) scale(1)' : 'translateX(20px) scale(0.98)',
-                // Disable transition when browser tab exists (sync with native BrowserView)
-                transition: hasBrowserTab ? 'none' : undefined,
-              }}
             >
               {(isCanvasOpen || isCanvasMaximized || isCanvasTransitioning) && <ContentCanvas />}
             </div>
