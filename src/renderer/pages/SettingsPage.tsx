@@ -27,7 +27,7 @@ import { CheckCircle2, XCircle, ArrowLeft, Eye, EyeOff } from '../components/ico
 import { Header } from '../components/layout/Header'
 import { McpServerList } from '../components/settings/McpServerList'
 import { useTranslation, setLanguage, getCurrentLanguage, SUPPORTED_LOCALES, type LocaleCode } from '../i18n'
-import { Loader2, LogOut, Plus, Check, Globe, Key, MessageSquare, type LucideIcon } from 'lucide-react'
+import { Loader2, LogOut, Plus, Check, Globe, Key, MessageSquare, FolderOpen, type LucideIcon } from 'lucide-react'
 
 /**
  * Get localized text based on current language
@@ -449,13 +449,25 @@ export function SettingsPage() {
     setConfig({ ...config, ...newConfig } as HaloConfig)
   }
 
-  // Handle save Custom API - save both legacy api and aiSources.custom
+  // Handle save Custom API - validate then save both legacy api and aiSources.custom
   const handleSaveCustomApi = async () => {
     setIsValidating(true)
     setValidationResult(null)
 
     try {
-      // Save to both legacy api and aiSources.custom for compatibility
+      // 1. First validate the API connection
+      const result = await api.validateApi(apiKey, apiUrl, provider)
+
+      if (!result.success || !result.data?.valid) {
+        // Validation failed, show error, don't save
+        setValidationResult({
+          valid: false,
+          message: result.data?.message || result.error || t('Connection failed')
+        })
+        return
+      }
+
+      // 2. Validation passed, save config
       const updates = {
         api: {
           provider: provider as any,
@@ -480,7 +492,7 @@ export function SettingsPage() {
       setValidationResult({ valid: true, message: t('Saved') })
       setShowCustomApiForm(false)
     } catch (error) {
-      setValidationResult({ valid: false, message: t('Save failed') })
+      setValidationResult({ valid: false, message: t('Connection failed') })
     } finally {
       setIsValidating(false)
     }
@@ -822,9 +834,10 @@ export function SettingsPage() {
                         <button
                           onClick={handleSaveCustomApi}
                           disabled={isValidating || !apiKey}
-                          className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                          className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
                         >
-                          {isValidating ? t('Saving...') : t('Save')}
+                          {isValidating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          {isValidating ? t('Validating...') : t('Save')}
                         </button>
                         {validationResult && (
                           <span className={`text-xs flex items-center gap-1 ${validationResult.valid ? 'text-green-500' : 'text-red-500'}`}>
@@ -942,9 +955,10 @@ export function SettingsPage() {
                     <button
                       onClick={handleSaveCustomApi}
                       disabled={isValidating || !apiKey}
-                      className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                      className="px-4 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
                     >
-                      {isValidating ? t('Saving...') : t('Save')}
+                      {isValidating && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      {isValidating ? t('Validating...') : t('Save')}
                     </button>
                     <button
                       onClick={() => setShowCustomApiForm(false)}
@@ -952,6 +966,12 @@ export function SettingsPage() {
                     >
                       {t('Cancel')}
                     </button>
+                    {validationResult && (
+                      <span className={`text-xs flex items-center gap-1 ${validationResult.valid ? 'text-green-500' : 'text-red-500'}`}>
+                        {validationResult.valid ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                        {validationResult.message}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -1103,6 +1123,23 @@ export function SettingsPage() {
                       />
                     </div>
                   </label>
+                </div>
+
+                {/* Open Log Folder */}
+                <div className="flex items-center justify-between pt-4 border-t border-border">
+                  <div className="flex-1">
+                    <p className="font-medium">{t('Log Files')}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {t('Open log folder for troubleshooting')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => api.openLogFolder()}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-secondary hover:bg-secondary/80 rounded-lg transition-colors"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    {t('Open Folder')}
+                  </button>
                 </div>
 
               </div>

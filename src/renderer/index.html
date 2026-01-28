@@ -50,6 +50,92 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Global Error Fallback: catches fatal errors before React mounts -->
+    <div id="global-error-fallback" style="
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 40px;
+      overflow: auto;
+    ">
+      <div style="max-width: 600px; margin: 0 auto;">
+        <div style="
+          width: 48px;
+          height: 48px;
+          border-radius: 50%;
+          border: 2px solid #6366f1;
+          opacity: 0.6;
+          margin-bottom: 24px;
+        "></div>
+        <h1 style="font-size: 20px; font-weight: 500; margin: 0 0 8px 0;">
+          Halo failed to start
+        </h1>
+        <p style="color: #a1a1aa; margin: 0 0 24px 0; font-size: 14px;">
+          An error occurred before the application could load. Please copy the error below and report it.
+        </p>
+        <pre id="global-error-message" style="
+          background: #18181b;
+          border: 1px solid #27272a;
+          border-radius: 8px;
+          padding: 16px;
+          font-family: 'SF Mono', Monaco, Consolas, monospace;
+          font-size: 12px;
+          line-height: 1.5;
+          overflow-x: auto;
+          white-space: pre-wrap;
+          word-break: break-all;
+          color: #f87171;
+          margin: 0;
+          user-select: text;
+        "></pre>
+        <p style="color: #71717a; margin: 16px 0 0 0; font-size: 12px;">
+          Try restarting the application. If the problem persists, please report at
+          <span style="color: #6366f1;">github.com/anthropics/halo/issues</span>
+        </p>
+      </div>
+    </div>
+
+    <script>
+      // Global error handler for fatal errors before React mounts
+      (function() {
+        window.__HALO_APP_MOUNTED__ = false;
+
+        function showFatalError(message) {
+          if (window.__HALO_APP_MOUNTED__) return; // React is handling errors
+
+          var fallback = document.getElementById('global-error-fallback');
+          var errorMsg = document.getElementById('global-error-message');
+          var root = document.getElementById('root');
+
+          if (fallback && errorMsg) {
+            root.style.display = 'none';
+            fallback.style.display = 'block';
+            errorMsg.textContent = message;
+          }
+        }
+
+        window.onerror = function(msg, url, line, col, error) {
+          var detail = msg;
+          if (url) detail += '\n\nFile: ' + url.split('/').pop() + ':' + line + ':' + col;
+          if (error && error.stack) detail += '\n\nStack:\n' + error.stack;
+          showFatalError(detail);
+          return !window.__HALO_APP_MOUNTED__; // Suppress only if React not mounted
+        };
+
+        window.onunhandledrejection = function(event) {
+          var reason = event.reason;
+          var message = reason instanceof Error
+            ? reason.message + (reason.stack ? '\n\nStack:\n' + reason.stack : '')
+            : String(reason);
+          showFatalError('Unhandled Promise Rejection:\n\n' + message);
+        };
+      })();
+    </script>
+
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

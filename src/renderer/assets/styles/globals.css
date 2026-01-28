@@ -116,21 +116,46 @@ body {
   --sal: env(safe-area-inset-left, 0px);
 }
 
-html, body {
-  position: fixed;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
+/* FIXME: Current mobile detection using media queries has limitations:
+ * - Desktop users can resize window below 640px and trigger mobile styles
+ * - This may cause drag issues on small desktop windows
+ * - Future improvement: Use JavaScript to detect Electron environment + viewport size
+ * - Better approach: Combine window.electronAPI detection with useIsMobile hook */
+
+/* Mobile-only: Apply fixed positioning for safe area support */
+@media (max-width: 640px) {
+  html, body {
+    position: fixed;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* #root uses inset to handle safe areas globally on mobile */
+  #root {
+    position: fixed;
+    top: var(--sat);
+    right: var(--sar);
+    bottom: var(--sab);
+    left: var(--sal);
+    overflow: hidden;
+  }
 }
 
-/* #root uses inset to handle safe areas globally */
-#root {
-  position: fixed;
-  top: var(--sat);
-  right: var(--sar);
-  bottom: var(--sab);
-  left: var(--sal);
-  overflow: hidden;
+/* Desktop: Use relative positioning to preserve Electron drag functionality */
+@media (min-width: 641px) {
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  #root {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    overflow: hidden;
+  }
 }
 
 /* For Portal modals rendered outside #root */

@@ -20,6 +20,37 @@ import {
 import { getApiTypeFromUrl, isValidEndpointUrl, getEndpointUrlError, shouldForceStream } from './api-type'
 import { withRequestQueue, generateQueueKey } from './request-queue'
 
+/**
+ * Filter sensitive content for Tencent provider
+ * Removes GitHub URLs that trigger Tencent's content filter
+ */
+function filterForTencent(request: any): any {
+  if (!request?.messages) return request
+
+  const filtered = JSON.parse(JSON.stringify(request))
+
+  for (const msg of filtered.messages) {
+    if (typeof msg.content === 'string') {
+      // Remove lines containing GitHub URLs
+      msg.content = msg.content
+        .split('\n')
+        .filter((line: string) => !line.includes('https://github.com/'))
+        .join('\n')
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          block.text = block.text
+            .split('\n')
+            .filter((line: string) => !line.includes('https://github.com/'))
+            .join('\n')
+        }
+      }
+    }
+  }
+
+  return filtered
+}
+
 export interface RequestHandlerOptions {
   debug?: boolean
   timeoutMs?: number
@@ -91,6 +122,9 @@ export async function handleMessagesRequest(
   res: ExpressResponse,
   options: RequestHandlerOptions = {}
 ): Promise<void> {
+  // [DIAG] Entry point log - always print
+  console.log(`[RequestHandler:DIAG] handleMessagesRequest called, backendUrl=${config.url}`)
+
   const { debug = false, timeoutMs = DEFAULT_TIMEOUT_MS } = options
   const { url: backendUrl, key: apiKey, model, headers: customHeaders, apiType: configApiType } = config
 
@@ -133,8 +167,18 @@ export async function handleMessagesRequest(
       console.log(`[RequestHandler] wire=${apiType} tools=${toolCount}`)
       console.log(`[RequestHandler] POST ${backendUrl} (stream=${wantStream ?? false})`)
 
+      // Debug: Log request body for content audit troubleshooting
+      if (backendUrl.includes('tencent')) {
+        console.log(`[RequestHandler:Tencent] Request messages:`, JSON.stringify((openaiRequest as any).messages, null, 2))
+      }
+
+      // Apply Tencent content filter if needed
+      const filteredRequest = backendUrl.includes('tencent')
+        ? filterForTencent(openaiRequest)
+        : openaiRequest
+
       // Make upstream request - URL is used directly, no modification
-      let upstreamResp = await fetchUpstream(backendUrl, apiKey, openaiRequest, timeoutMs, undefined, customHeaders)
+      let upstreamResp = await fetchUpstream(backendUrl, apiKey, filteredRequest, timeoutMs, undefined, customHeaders)
       console.log(`[RequestHandler] Upstream response: ${upstreamResp.status}`)
 
       // Handle errors
@@ -155,9 +199,14 @@ export async function handleMessagesRequest(
 
           // Retry with stream enabled
           wantStream = true
-          const retryRequest = apiType === 'responses'
+          let retryRequest = apiType === 'responses'
             ? convertAnthropicToOpenAIResponses({ ...anthropicRequest, stream: true }).request
             : convertAnthropicToOpenAIChat({ ...anthropicRequest, stream: true }).request
+
+          // Apply Tencent filter to retry request
+          if (backendUrl.includes('tencent')) {
+            retryRequest = filterForTencent(retryRequest)
+          }
 
           upstreamResp = await fetchUpstream(backendUrl, apiKey, retryRequest, timeoutMs, undefined, customHeaders)
 

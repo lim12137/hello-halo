@@ -3,6 +3,31 @@
  * The main entry point for the Electron application
  */
 
+// ========================================
+// LOGGING INITIALIZATION (must be first)
+// ========================================
+// Initialize electron-log before any other code to capture all logs
+// This replaces console.log/warn/error globally with electron-log
+// Logs are written to: ~/Library/Logs/Halo/ (macOS), %USERPROFILE%\AppData\Roaming\Halo\logs (Windows)
+import log from 'electron-log/main.js'
+
+// Initialize for renderer process support (IPC transport)
+log.initialize()
+
+// Configure log levels (industry standard)
+// - Production: 'info' (logs info/warn/error, skips debug/silly)
+// - Development: 'debug' (more verbose)
+const isDev = process.env.NODE_ENV === 'development'
+log.transports.file.level = 'info'           // Always log info+ to file
+log.transports.console.level = isDev ? 'debug' : 'info'
+log.transports.file.maxSize = 5 * 1024 * 1024 // 5MB per file, auto-rotate
+
+// Catch unhandled errors and log them
+log.errorHandler.startCatching()
+
+// Replace global console with electron-log (performance: direct replacement, no wrapper)
+Object.assign(console, log.functions)
+
 // Handle EPIPE errors gracefully
 // These occur when SDK child processes are terminated during app shutdown
 // Especially common in E2E tests when app is forcefully closed
@@ -52,22 +77,25 @@ if (!gotTheLock) {
 // Note: This event only fires on the primary instance
 app.on('second-instance', () => {
   // Focus the existing window when a second instance is launched
-  if (mainWindow) {
-    // Restore from hidden state if needed
-    if (!mainWindow.isVisible()) {
-      mainWindow.show()
-    }
-    // Restore from minimized state
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-    // Bring to front
-    mainWindow.focus()
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
 
-    // On macOS, also show in dock
-    if (process.platform === 'darwin') {
-      app.dock?.show()
-    }
+  // Restore from hidden state if needed
+  if (!mainWindow.isVisible()) {
+    mainWindow.show()
+  }
+  // Restore from minimized state
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  // Bring to front
+  mainWindow.focus()
+
+  // On macOS, also show in dock
+  if (process.platform === 'darwin') {
+    app.dock?.show()
   }
 })
 
@@ -380,6 +408,7 @@ app.whenReady().then(async () => {
 })
 
 let hasShutdown = false
+const SHUTDOWN_TIMEOUT_MS = 5000
 async function shutdownServices(): Promise<void> {
   if (hasShutdown) {
     return
@@ -390,18 +419,29 @@ async function shutdownServices(): Promise<void> {
   await cleanupExtendedServices().catch(console.error)
 }
 
+async function shutdownServicesWithTimeout(timeoutMs: number): Promise<void> {
+  const shutdownPromise = shutdownServices().catch(console.error)
+  await Promise.race([
+    shutdownPromise,
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[Main] Shutdown timeout after ${timeoutMs}ms, forcing quit`)
+        resolve()
+      }, timeoutMs)
+    })
+  ])
+}
+
 app.on('before-quit', () => {
   isAppQuitting = true
-  shutdownServices().catch(console.error)
+  shutdownServicesWithTimeout(SHUTDOWN_TIMEOUT_MS).catch(console.error)
 })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    shutdownServices()
+    shutdownServicesWithTimeout(SHUTDOWN_TIMEOUT_MS)
       .catch(console.error)
-      .finally(() => {
-        app.quit()
-      })
+      .finally(() => app.quit())
   }
 })
 

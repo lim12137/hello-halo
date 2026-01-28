@@ -1,8 +1,10 @@
 /**
- * System IPC Handlers - Auto launch and window controls
+ * System IPC Handlers - Auto launch, window controls, and logging
  */
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, shell } from 'electron'
+import { dirname } from 'path'
+import log from 'electron-log/main.js'
 import { setAutoLaunch, getAutoLaunch } from '../services/config.service'
 import { getMainWindow, onMainWindowChange } from '../services/window.service'
 
@@ -113,6 +115,19 @@ export function registerSystemHandlers(): void {
         }
       }
       return { success: true, data: mainWindow?.isMaximized() ?? false }
+    } catch (error) {
+      const err = error as Error
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Open log folder in system file manager
+  ipcMain.handle('system:open-log-folder', async () => {
+    try {
+      const logFile = log.transports.file.getFile()
+      const logDir = dirname(logFile.path)
+      await shell.openPath(logDir)
+      return { success: true, data: logDir }
     } catch (error) {
       const err = error as Error
       return { success: false, error: err.message }

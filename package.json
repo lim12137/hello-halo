@@ -41,7 +41,7 @@
     "i18n": "npm run i18n:extract && npm run i18n:translate"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@anthropic-ai/claude-agent-sdk": "0.1.76",
     "@anthropic-ai/claude-code": "latest",
     "@anthropic-ai/sdk": "latest",
     "@codemirror/commands": "^6.10.1",
@@ -76,6 +76,7 @@
     "cloudflared": "^0.7.1",
     "clsx": "^2.1.0",
     "diff": "^8.0.2",
+    "electron-log": "^5.4.3",
     "electron-updater": "^6.6.2",
     "express": "^5.1.0",
     "fix-path": "^5.0.0",
