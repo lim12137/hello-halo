@@ -3,16 +3,25 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  HealthStatusResponse,
+  HealthStateResponse,
+  HealthRecoveryResponse,
+  HealthReportResponse,
+  HealthExportResponse,
+  HealthCheckResponse
+} from '../shared/types'
 
 // Type definitions for exposed API
 export interface HaloAPI {
   // Generic Auth (provider-agnostic)
   authGetProviders: () => Promise<IpcResponse>
+  authGetBuiltinProviders: () => Promise<IpcResponse>
   authStartLogin: (providerType: string) => Promise<IpcResponse>
   authCompleteLogin: (providerType: string, state: string) => Promise<IpcResponse>
-  authRefreshToken: (providerType: string) => Promise<IpcResponse>
-  authCheckToken: (providerType: string) => Promise<IpcResponse>
-  authLogout: (providerType: string) => Promise<IpcResponse>
+  authRefreshToken: (sourceId: string) => Promise<IpcResponse>
+  authCheckToken: (sourceId: string) => Promise<IpcResponse>
+  authLogout: (sourceId: string) => Promise<IpcResponse>
   onAuthLoginProgress: (callback: (data: { provider: string; status: string }) => void) => () => void
 
   // Config
@@ -155,6 +164,7 @@ export interface HaloAPI {
   // System Settings
   getAutoLaunch: () => Promise<IpcResponse>
   setAutoLaunch: (enabled: boolean) => Promise<IpcResponse>
+  openLogFolder: () => Promise<IpcResponse>
 
   // Window
   setTitleBarOverlay: (options: { color: string; symbolColor: string }) => Promise<IpcResponse>
@@ -266,6 +276,15 @@ export interface HaloAPI {
     extendedReadyAt: number
   }>>
   onBootstrapExtendedReady: (callback: (data: { timestamp: number; duration: number }) => void) => () => void
+
+  // Health System
+  getHealthStatus: () => Promise<IpcResponse<HealthStatusResponse>>
+  getHealthState: () => Promise<IpcResponse<HealthStateResponse>>
+  triggerHealthRecovery: (strategyId: string, userConsented: boolean) => Promise<IpcResponse<HealthRecoveryResponse>>
+  generateHealthReport: () => Promise<IpcResponse<HealthReportResponse>>
+  generateHealthReportText: () => Promise<IpcResponse<string>>
+  exportHealthReport: (filePath?: string) => Promise<IpcResponse<HealthExportResponse>>
+  runHealthCheck: () => Promise<IpcResponse<HealthCheckResponse>>
 }
 
 interface IpcResponse<T = unknown> {
@@ -295,11 +314,12 @@ function createEventListener(channel: string, callback: (data: unknown) => void)
 const api: HaloAPI = {
   // Generic Auth (provider-agnostic)
   authGetProviders: () => ipcRenderer.invoke('auth:get-providers'),
+  authGetBuiltinProviders: () => ipcRenderer.invoke('auth:get-builtin-providers'),
   authStartLogin: (providerType) => ipcRenderer.invoke('auth:start-login', providerType),
   authCompleteLogin: (providerType, state) => ipcRenderer.invoke('auth:complete-login', providerType, state),
-  authRefreshToken: (providerType) => ipcRenderer.invoke('auth:refresh-token', providerType),
-  authCheckToken: (providerType) => ipcRenderer.invoke('auth:check-token', providerType),
-  authLogout: (providerType) => ipcRenderer.invoke('auth:logout', providerType),
+  authRefreshToken: (sourceId) => ipcRenderer.invoke('auth:refresh-token', sourceId),
+  authCheckToken: (sourceId) => ipcRenderer.invoke('auth:check-token', sourceId),
+  authLogout: (sourceId) => ipcRenderer.invoke('auth:logout', sourceId),
   onAuthLoginProgress: (callback) => createEventListener('auth:login-progress', callback as (data: unknown) => void),
 
   // Config
@@ -390,6 +410,7 @@ const api: HaloAPI = {
   // System Settings
   getAutoLaunch: () => ipcRenderer.invoke('system:get-auto-launch'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('system:set-auto-launch', enabled),
+  openLogFolder: () => ipcRenderer.invoke('system:open-log-folder'),
 
   // Window
   setTitleBarOverlay: (options) => ipcRenderer.invoke('window:set-title-bar-overlay', options),
@@ -480,6 +501,15 @@ const api: HaloAPI = {
   // Bootstrap lifecycle
   getBootstrapStatus: () => ipcRenderer.invoke('bootstrap:get-status'),
   onBootstrapExtendedReady: (callback) => createEventListener('bootstrap:extended-ready', callback as (data: unknown) => void),
+
+  // Health System
+  getHealthStatus: () => ipcRenderer.invoke('health:get-status'),
+  getHealthState: () => ipcRenderer.invoke('health:get-state'),
+  triggerHealthRecovery: (strategyId, userConsented) => ipcRenderer.invoke('health:trigger-recovery', strategyId, userConsented),
+  generateHealthReport: () => ipcRenderer.invoke('health:generate-report'),
+  generateHealthReportText: () => ipcRenderer.invoke('health:generate-report-text'),
+  exportHealthReport: (filePath) => ipcRenderer.invoke('health:export-report', filePath),
+  runHealthCheck: () => ipcRenderer.invoke('health:run-check'),
 }
 
 contextBridge.exposeInMainWorld('halo', api)

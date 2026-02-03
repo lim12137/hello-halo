@@ -24,13 +24,11 @@ export function createApp(options: RouterOptions = {}): Express {
   // Body parser with large limit for images
   app.use(express.json({ limit: '50mb' }))
 
-  // Debug logging middleware
-  if (debug) {
-    app.use((req, _res, next) => {
-      console.log(`[OpenAICompatRouter] ${req.method} ${req.url}`)
-      next()
-    })
-  }
+  // Request logging middleware (production-level)
+  app.use((req, _res, next) => {
+    console.log(`[Router] ${req.method} ${req.url}`)
+    next()
+  })
 
   // Health check endpoint
   app.get('/health', (_req, res) => {

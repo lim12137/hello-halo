@@ -105,4 +105,6 @@ export function isRouterRunning(): boolean {
 export { createApp } from './router'
 export { handleMessagesRequest, handleCountTokensRequest } from './request-handler'
 export { withRequestQueue, generateQueueKey, clearRequestQueues, getPendingRequestCount } from './request-queue'
-export { parseApiType, getApiTypeFromEnv, resolveApiType, shouldForceStream } from './api-type'
+export { shouldForceStream } from './api-type'
+export { applyProviderAdapter, findAdapter } from './provider-adapters'
+export type { ProviderAdapter } from './provider-adapters'

@@ -206,7 +206,7 @@ export default function App() {
 
     // Message events (with session IDs)
     const unsubMessage = api.onAgentMessage((data) => {
-      console.log('[App] Received agent:message event:', data)
+      // console.log('[App] Received agent:message event:', data)
       handleAgentMessage(data as AgentEventBase & { content: string; isComplete: boolean })
     })
 
@@ -449,7 +449,7 @@ export default function App() {
       const loadedConfig = response.data as HaloConfig
       setConfig(loadedConfig)  // Sync config to store (was missing, causing empty apiKey in settings)
       // Show setup if first launch or no AI source configured
-      if (loadedConfig.isFirstLaunch || !hasAnyAISource(loadedConfig)) {
+      if (loadedConfig.isFirstLaunch || !hasAnyAISource(loadedConfig.aiSources)) {
         setView('setup')
       } else {
         setView('home')

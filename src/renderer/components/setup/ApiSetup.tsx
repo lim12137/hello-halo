@@ -6,11 +6,13 @@
  */
 
 import { useState } from 'react'
+import { v4 as uuidv4 } from 'uuid'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../api'
-import { Lightbulb } from '../icons/ToolIcons'
-import { Globe, ChevronDown, ArrowLeft, Eye, EyeOff, RefreshCw } from 'lucide-react'
-import { AVAILABLE_MODELS, DEFAULT_MODEL } from '../../types'
+import { Lightbulb, CheckCircle2, XCircle } from '../icons/ToolIcons'
+import { Globe, ChevronDown, ArrowLeft, Eye, EyeOff, Loader2, RefreshCw } from 'lucide-react'
+import { AVAILABLE_MODELS, DEFAULT_MODEL, type AISourcesConfig, type AISource } from '../../types'
+import { getBuiltinProvider } from '../../types'
 import { useTranslation, setLanguage, getCurrentLanguage, SUPPORTED_LOCALES, type LocaleCode } from '../../i18n'
 
 interface ApiSetupProps {
@@ -29,8 +31,13 @@ export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
   const [apiKey, setApiKey] = useState(config?.api.apiKey || '')
   const [apiUrl, setApiUrl] = useState(config?.api.apiUrl || 'https://api.anthropic.com')
   const [model, setModel] = useState(config?.api.model || DEFAULT_MODEL)
-  const [isSaving, setIsSaving] = useState(false)
+  const [isValidating, setIsValidating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Validation result state
+  const [validationResult, setValidationResult] = useState<{
+    valid: boolean
+    message?: string
+  } | null>(null)
   // Custom model toggle
   const [useCustomModel, setUseCustomModel] = useState(() => {
     const currentModel = config?.api.model || DEFAULT_MODEL
@@ -128,7 +135,7 @@ export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
         setFetchedModels(models)
 
         // If current model is not in list (and we found models), select the first one?
-        // Or just let user decide. 
+        // Or just let user decide.
         // If current model is default generic one, maybe switch to first fetched.
         if (models.length > 0 && (!model || model === 'gpt-4o-mini' || model === 'deepseek-chat')) {
           setModel(models[0])
@@ -143,35 +150,74 @@ export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
     }
   }
 
-  // Handle save and enter
+  // Handle save and enter - validate before save
   const handleSaveAndEnter = async () => {
     if (!apiKey.trim()) {
       setError(t('Please enter API Key'))
       return
     }
 
-    setIsSaving(true)
+    setIsValidating(true)
     setError(null)
+    setValidationResult(null)
 
     try {
-      // Save config with new aiSources structure
-      const customConfig = {
-        provider: provider as 'anthropic' | 'openai',
+      // 1. First validate the API connection
+      const effectiveApiUrl = apiUrl || 'https://api.anthropic.com'
+      const result = await api.validateApi(apiKey, effectiveApiUrl, provider)
+
+      if (!result.success || !result.data?.valid) {
+        // Validation failed, show error, don't save
+        setValidationResult({
+          valid: false,
+          message: result.data?.message || result.error || t('Connection failed')
+        })
+        setIsValidating(false)
+        return
+      }
+
+      // 2. Validation passed, use normalized URL from backend
+      const normalizedUrl = result.data.normalizedUrl || effectiveApiUrl
+      const now = new Date().toISOString()
+
+      // Build v2 AISource
+      const providerType = provider as 'anthropic' | 'openai'
+      const builtin = getBuiltinProvider(providerType)
+
+      const newSource: AISource = {
+        id: uuidv4(),
+        name: builtin?.name || (providerType === 'anthropic' ? 'Claude API' : 'Custom API'),
+        provider: providerType,
+        authType: 'api-key',
+        apiUrl: normalizedUrl,
         apiKey,
-        apiUrl: apiUrl || 'https://api.anthropic.com',
         model,
-        availableModels: fetchedModels
+        availableModels: fetchedModels.length > 0
+          ? fetchedModels.map(id => ({ id, name: id }))
+          : builtin?.models || [{ id: model, name: model }],
+        createdAt: now,
+        updatedAt: now
+      }
+
+      // Build v2 aiSources config
+      const newAiSources: AISourcesConfig = {
+        version: 2,
+        currentId: newSource.id,
+        sources: [newSource]
       }
 
       const newConfig = {
         ...config,
         // Legacy api field for backward compatibility
-        api: customConfig,
-        // New aiSources structure
-        aiSources: {
-          current: 'custom' as const,
-          custom: customConfig
+        api: {
+          provider: providerType,
+          apiKey,
+          apiUrl: normalizedUrl,
+          model,
+          availableModels: fetchedModels
         },
+        // v2 aiSources structure
+        aiSources: newAiSources,
         isFirstLaunch: false
       }
 
@@ -181,8 +227,11 @@ export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
       // Enter Halo
       setView('home')
     } catch (err) {
-      setError(t('Save failed, please try again'))
-      setIsSaving(false)
+      setValidationResult({
+        valid: false,
+        message: t('Connection failed')
+      })
+      setIsValidating(false)
     }
   }
 
@@ -441,13 +490,24 @@ export function ApiSetup({ onBack, showBack = false }: ApiSetupProps) {
           <p className="text-center mt-4 text-sm text-red-500">{error}</p>
         )}
 
+        {/* Validation result */}
+        {validationResult && !validationResult.valid && (
+          <div className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+            <p className="text-sm text-red-500 flex items-center gap-2">
+              <XCircle className="w-4 h-4 shrink-0" />
+              <span>{validationResult.message}</span>
+            </p>
+          </div>
+        )}
+
         {/* Save button */}
         <button
           onClick={handleSaveAndEnter}
-          disabled={isSaving}
-          className="w-full mt-6 px-8 py-3 bg-primary text-primary-foreground rounded-lg btn-primary disabled:opacity-50"
+          disabled={isValidating}
+          className="w-full mt-6 px-8 py-3 bg-primary text-primary-foreground rounded-lg btn-primary disabled:opacity-50 flex items-center justify-center gap-2"
         >
-          {isSaving ? t('Saving...') : t('Save and enter')}
+          {isValidating && <Loader2 className="w-4 h-4 animate-spin" />}
+          {isValidating ? t('Validating...') : t('Save and enter')}
         </button>
       </div>
     </div>

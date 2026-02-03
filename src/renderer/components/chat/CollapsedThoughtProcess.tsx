@@ -58,7 +58,10 @@ function ThoughtItem({ thought }: { thought: Thought }) {
       <div className="flex items-center gap-2">
         <Icon size={14} className={`${color} shrink-0`} />
         <span className={`font-medium ${color} flex-1 min-w-0 truncate`}>
-          {t(getThoughtLabelKey(thought.type))}
+          {(() => {
+            const label = getThoughtLabelKey(thought.type)
+            return label === 'AI' ? label : t(label)
+          })()}
           {thought.toolName && ` - ${thought.toolName}`}
         </span>
         <span className="text-muted-foreground/40 text-[10px] shrink-0">
@@ -229,8 +232,8 @@ export function CollapsedThoughtProcess({ thoughts }: CollapsedThoughtProcessPro
           {/* Thought items */}
           {displayThoughts.length > 0 && (
             <div className={`${isMaximized ? 'max-h-[80vh]' : 'max-h-[300px]'} scrollbar-overlay px-3 transition-all duration-200`}>
-              {displayThoughts.map((thought) => (
-                <ThoughtItem key={thought.id} thought={thought} />
+              {displayThoughts.map((thought, index) => (
+                <ThoughtItem key={`${thought.id}-${index}`} thought={thought} />
               ))}
             </div>
           )}
