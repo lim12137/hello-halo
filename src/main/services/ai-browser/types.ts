@@ -247,10 +247,33 @@ export interface BrowserContextInterface {
   evaluateScript<T = unknown>(script: string, args?: unknown[]): Promise<T>
 
   // Page state
+  navigate(input: string): Promise<boolean>
+  getPageUrl(): Promise<string>
   getPageInfo(): Promise<{
     url: string
     title: string
     viewport: { width: number; height: number }
+  }>
+
+  // Emulation + performance helpers (used by SDK MCP wrapper)
+  setEmulation(options: {
+    device?: string
+    userAgent?: string
+    viewport?: { width: number; height: number }
+    offline?: boolean
+    latency?: number
+    downloadThroughput?: number
+    uploadThroughput?: number
+  }): Promise<void>
+  setViewportSize(width: number, height: number): Promise<void>
+  startPerformanceMetrics(): Promise<void>
+  stopPerformanceMetrics(): Promise<Record<string, number>>
+  getPerformanceInsights(): Promise<{
+    lcp?: number
+    fid?: number
+    cls?: number
+    ttfb?: number
+    fcp?: number
   }>
 
   // Wait utilities

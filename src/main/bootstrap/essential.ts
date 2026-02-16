@@ -27,6 +27,7 @@ import { registerArtifactHandlers } from '../ipc/artifact'
 import { registerSystemHandlers } from '../ipc/system'
 import { registerUpdaterHandlers, initAutoUpdater } from '../services/updater.service'
 import { registerAuthHandlers } from '../ipc/auth'
+import { registerSkillsHandlers } from '../ipc/skills'
 import { registerBootstrapStatusHandler } from './state'
 
 /**
@@ -73,6 +74,9 @@ export function initializeEssentialServices(): void {
   // Updater: Lightweight, starts checking for updates in background
   registerUpdaterHandlers()
   initAutoUpdater()
+
+  // Skills: Slash commands and custom skills listing
+  registerSkillsHandlers()
 
   const duration = performance.now() - start
   console.log(`[Bootstrap] Essential services initialized in ${duration.toFixed(1)}ms`)

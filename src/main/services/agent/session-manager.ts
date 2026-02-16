@@ -12,8 +12,7 @@ import path from 'path'
 import os from 'os'
 import { existsSync, copyFileSync, mkdirSync } from 'fs'
 import { app } from 'electron'
-import { unstable_v2_createSession } from '@anthropic-ai/claude-agent-sdk'
-import { getConfig, onApiConfigChange, getCredentialsGeneration } from '../config.service'
+import { getConfig, getHaloDir, onApiConfigChange, getCredentialsGeneration } from '../config.service'
 import { getConversation } from '../conversation.service'
 import type {
   V2SDKSession,
@@ -30,6 +29,14 @@ import {
 } from './helpers'
 import { registerProcess, unregisterProcess, getCurrentInstanceId } from '../health'
 import { resolveCredentialsForSdk, buildBaseSdkOptions } from './sdk-config'
+import {
+  createV2SdkSession,
+  closeSession,
+  getSessionCapabilities,
+  getSessionPid,
+  isSessionReady,
+  onSessionExit
+} from './sdk-adapter'
 
 // ============================================
 // Session Maps
@@ -75,7 +82,7 @@ function cleanupSession(conversationId: string, reason: string, skipMapCheck = f
 
   if (info) {
     try {
-      info.session.close()  // Release FDs (stdin/stdout/stderr pipes)
+      closeSession(info.session)  // Release FDs (stdin/stdout/stderr pipes)
     } catch (e) {
       // Ignore close errors - session may already be dead
     }
@@ -108,29 +115,7 @@ function cleanupSession(conversationId: string, reason: string, skipMapCheck = f
  */
 function isSessionTransportReady(session: V2SDKSession): boolean {
   try {
-    // Access SDK internal state: session.query.transport
-    // This is the authoritative source for process health
-    const query = (session as any).query
-    const transport = query?.transport
-
-    if (!transport) {
-      // No transport means session is definitely not ready
-      return false
-    }
-
-    // Check using isReady() method if available (preferred)
-    if (typeof transport.isReady === 'function') {
-      return transport.isReady()
-    }
-
-    // Fallback to ready property
-    if (typeof transport.ready === 'boolean') {
-      return transport.ready
-    }
-
-    // If we can't determine state, assume it's ready (conservative approach)
-    // This prevents unnecessary session recreation if SDK structure changes
-    return true
+    return isSessionReady(session)
   } catch (e) {
     // If any error occurs during check, log and assume session is invalid
     // Better to recreate than to fail with cryptic error
@@ -161,26 +146,13 @@ function isSessionTransportReady(session: V2SDKSession): boolean {
  */
 function registerProcessExitListener(session: V2SDKSession, conversationId: string): void {
   try {
-    // Access SDK internal transport to register exit listener
-    const transport = (session as any).query?.transport
-
-    if (!transport) {
-      console.warn(`[Agent][${conversationId}] Cannot register exit listener: no transport`)
-      return
-    }
-
-    // SDK provides onExit(callback) method for process exit notification
-    if (typeof transport.onExit === 'function') {
-      const unsubscribe = transport.onExit((error: Error | undefined) => {
-        const errorMsg = error ? `: ${error.message}` : ''
-        cleanupSession(conversationId, `process exited${errorMsg}`)
-        console.log(`[Agent][${conversationId}] Remaining sessions: ${v2Sessions.size}`)
-      })
-
+    const unsubscribe = onSessionExit(session, (error?: Error) => {
+      const errorMsg = error ? `: ${error.message}` : ''
+      cleanupSession(conversationId, `process exited${errorMsg}`)
+      console.log(`[Agent][${conversationId}] Remaining sessions: ${v2Sessions.size}`)
+    })
+    if (unsubscribe) {
       console.log(`[Agent][${conversationId}] Process exit listener registered`)
-
-      // Note: unsubscribe is returned but we don't need to call it
-      // The listener will be automatically removed when transport.close() is called
     } else {
       console.warn(`[Agent][${conversationId}] SDK transport.onExit not available, relying on polling cleanup`)
     }
@@ -275,7 +247,7 @@ function migrateSessionIfNeeded(workDir: string, sessionId: string): boolean {
   console.log(`[Agent] Migration check: workDir="${workDir}" -> projectDir="${projectDir}"`)
 
   // 2. Build old and new paths
-  const newConfigDir = path.join(app.getPath('userData'), 'claude-config')
+  const newConfigDir = getClaudeConfigDir()
   const oldConfigDir = path.join(os.homedir(), '.claude')
 
   const newPath = path.join(newConfigDir, 'projects', projectDir, sessionFile)
@@ -313,6 +285,16 @@ function migrateSessionIfNeeded(workDir: string, sessionId: string): boolean {
   } catch (error) {
     console.error(`[Agent] Failed to migrate session file: ${sessionId}`, error)
     return false
+  }
+}
+
+function getClaudeConfigDir(): string {
+  try {
+    return path.join(app.getPath('userData'), 'claude-config')
+  } catch (error) {
+    const fallback = path.join(getHaloDir(), 'claude-config')
+    console.warn('[Agent] Failed to resolve userData path for session migration, using fallback:', fallback, error)
+    return fallback
   }
 }
 
@@ -439,11 +421,12 @@ export async function getOrCreateV2Session(
     sdkOptions.resume = effectiveSessionId
   }
   // Requires SDK patch: native SDK ignores most sdkOptions parameters
-  // Use 'as any' to bypass type check, actual params handled by patched SDK
-  const session = (await unstable_v2_createSession(sdkOptions as any)) as unknown as V2SDKSession
+  const session = await createV2SdkSession(sdkOptions)
+  const capabilities = getSessionCapabilities(session)
+  console.log(`[Agent][${conversationId}] SDK session capabilities: ${JSON.stringify(capabilities)}`)
 
   // Log PID for health system verification (via SDK patch)
-  const pid = (session as any).pid
+  const pid = getSessionPid(session)
   console.log(`[Agent][${conversationId}] V2 session created in ${Date.now() - startTime}ms, PID: ${pid ?? 'unavailable'}`)
 
   // Register with health system for orphan detection

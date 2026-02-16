@@ -8,6 +8,7 @@
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
+import { getHaloDir } from './config.service'
 
 export interface GitBashDetectionResult {
   found: boolean
@@ -38,7 +39,7 @@ export function detectGitBash(): GitBashDetectionResult {
   }
 
   // 2. Check app-local installation (managed by Halo)
-  const localGitBash = join(app.getPath('userData'), 'git-bash', 'bin', 'bash.exe')
+  const localGitBash = join(getSafeUserDataPath(), 'git-bash', 'bin', 'bash.exe')
   if (existsSync(localGitBash)) {
     console.log('[GitBash] Found app-local installation:', localGitBash)
     return { found: true, path: localGitBash, source: 'app-local' }
@@ -96,7 +97,7 @@ function findGitInPath(): string | null {
  * Get the path to the app-local Git Bash installation directory
  */
 export function getAppLocalGitBashDir(): string {
-  return join(app.getPath('userData'), 'git-bash')
+  return join(getSafeUserDataPath(), 'git-bash')
 }
 
 /**
@@ -113,4 +114,14 @@ export function isAppLocalInstallation(): boolean {
 export function setGitBashPathEnv(path: string): void {
   process.env.CLAUDE_CODE_GIT_BASH_PATH = path
   console.log('[GitBash] Environment variable set:', path)
+}
+
+function getSafeUserDataPath(): string {
+  try {
+    return app.getPath('userData')
+  } catch (error) {
+    const fallback = join(getHaloDir(), 'user-data')
+    console.warn('[GitBash] Failed to resolve app userData path, using fallback:', fallback, error)
+    return fallback
+  }
 }

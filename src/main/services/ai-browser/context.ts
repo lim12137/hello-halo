@@ -46,6 +46,7 @@ export class BrowserContext implements BrowserContextInterface {
   private consoleMessages: ConsoleMessage[] = []
   private consoleEnabled: boolean = false
   private consoleMessageCounter: number = 0
+  private performanceMetricsEnabled: boolean = false
 
   // Dialog handling state
   private pendingDialog: DialogInfo | null = null
@@ -310,12 +311,7 @@ export class BrowserContext implements BrowserContextInterface {
    * Get a specific network request by ID
    */
   getNetworkRequest(id: string): NetworkRequest | undefined {
-    for (const request of this.networkRequests.values()) {
-      if (request.id === id) {
-        return request
-      }
-    }
-    return undefined
+    return Array.from(this.networkRequests.values()).find(request => request.id === id)
   }
 
   /**
@@ -893,6 +889,24 @@ export class BrowserContext implements BrowserContextInterface {
   // ============================================
 
   /**
+   * Navigate current active page
+   */
+  async navigate(input: string): Promise<boolean> {
+    if (!this.activeViewId) {
+      return false
+    }
+    return browserViewManager.navigate(this.activeViewId, input)
+  }
+
+  /**
+   * Get current page URL
+   */
+  async getPageUrl(): Promise<string> {
+    const pageInfo = await this.getPageInfo()
+    return pageInfo.url
+  }
+
+  /**
    * Get current page information
    */
   async getPageInfo(): Promise<{
@@ -917,6 +931,134 @@ export class BrowserContext implements BrowserContextInterface {
         height: metrics.layoutViewport.clientHeight
       }
     }
+  }
+
+  // ============================================
+  // Emulation + Performance
+  // ============================================
+
+  /**
+   * Apply emulation settings for the current page.
+   * This intentionally focuses on options currently used by SDK MCP tools.
+   */
+  async setEmulation(options: {
+    device?: string
+    userAgent?: string
+    viewport?: { width: number; height: number }
+    offline?: boolean
+    latency?: number
+    downloadThroughput?: number
+    uploadThroughput?: number
+  }): Promise<void> {
+    const pageInfo = await this.getPageInfo()
+    const width = options.viewport?.width ?? pageInfo.viewport.width
+    const height = options.viewport?.height ?? pageInfo.viewport.height
+
+    await this.sendCDPCommand('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: width,
+      screenHeight: height
+    })
+
+    if (options.userAgent || options.device) {
+      const webContents = this.getWebContents()
+      const fallbackUserAgent = webContents?.getUserAgent() ?? ''
+      await this.sendCDPCommand('Emulation.setUserAgentOverride', {
+        userAgent: options.userAgent || fallbackUserAgent
+      })
+    }
+
+    const shouldApplyNetwork =
+      options.offline !== undefined ||
+      options.latency !== undefined ||
+      options.downloadThroughput !== undefined ||
+      options.uploadThroughput !== undefined
+
+    if (shouldApplyNetwork) {
+      await this.sendCDPCommand('Network.emulateNetworkConditions', {
+        offline: options.offline ?? false,
+        latency: options.latency ?? 0,
+        downloadThroughput: options.downloadThroughput ?? -1,
+        uploadThroughput: options.uploadThroughput ?? -1
+      })
+    }
+  }
+
+  async setViewportSize(width: number, height: number): Promise<void> {
+    await this.sendCDPCommand('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: width,
+      screenHeight: height
+    })
+  }
+
+  async startPerformanceMetrics(): Promise<void> {
+    await this.sendCDPCommand('Performance.enable')
+    this.performanceMetricsEnabled = true
+  }
+
+  async stopPerformanceMetrics(): Promise<Record<string, number>> {
+    try {
+      const result = await this.sendCDPCommand<{
+        metrics: Array<{ name: string; value: number }>
+      }>('Performance.getMetrics')
+      const metrics: Record<string, number> = {}
+      for (const metric of result.metrics) {
+        metrics[metric.name] = metric.value
+      }
+      return metrics
+    } finally {
+      if (this.performanceMetricsEnabled) {
+        await this.sendCDPCommand('Performance.disable').catch(() => {})
+        this.performanceMetricsEnabled = false
+      }
+    }
+  }
+
+  async getPerformanceInsights(): Promise<{
+    lcp?: number
+    fid?: number
+    cls?: number
+    ttfb?: number
+    fcp?: number
+  }> {
+    const insights = await this.evaluateScript<{
+      lcp?: number
+      fid?: number
+      cls?: number
+      ttfb?: number
+      fcp?: number
+    }>(`(() => {
+      const nav = performance.getEntriesByType('navigation')[0];
+      const paint = performance.getEntriesByType('paint');
+      const fcpEntry = paint.find(e => e.name === 'first-contentful-paint');
+      const lcpEntries = performance.getEntriesByType('largest-contentful-paint');
+      const lcpEntry = lcpEntries.length > 0 ? lcpEntries[lcpEntries.length - 1] : null;
+      const layoutShifts = performance.getEntriesByType('layout-shift');
+      let cls = 0;
+      for (const entry of layoutShifts) {
+        if (!entry.hadRecentInput) {
+          cls += entry.value || 0;
+        }
+      }
+      const firstInputEntries = performance.getEntriesByType('first-input');
+      const firstInput = firstInputEntries.length > 0 ? firstInputEntries[0] : null;
+      return {
+        ttfb: nav ? nav.responseStart : undefined,
+        fcp: fcpEntry ? fcpEntry.startTime : undefined,
+        lcp: lcpEntry ? lcpEntry.startTime : undefined,
+        fid: firstInput ? (firstInput.processingStart - firstInput.startTime) : undefined,
+        cls
+      };
+    })()`)
+
+    return insights || {}
   }
 
   // ============================================

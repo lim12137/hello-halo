@@ -1204,6 +1204,30 @@ export const api = {
     }
     return window.halo.runHealthCheck()
   },
+
+  // ===== Skills =====
+  // List all available slash commands and skills
+  listSkills: async (projectPath?: string): Promise<ApiResponse<Array<{
+    name: string
+    description: string
+    source: 'builtin' | 'user' | 'project'
+    userInvocable: boolean
+    modelInvocation: boolean
+  }>>> => {
+    if (isElectron()) {
+      return window.halo.listSkills(projectPath)
+    }
+    // In remote mode, return builtin commands only (no filesystem access)
+    return httpRequest('GET', '/api/skills', { projectPath })
+  },
+
+  // Refresh skills cache (force rescan)
+  refreshSkills: async (): Promise<ApiResponse> => {
+    if (isElectron()) {
+      return window.halo.refreshSkills()
+    }
+    return httpRequest('POST', '/api/skills/refresh')
+  },
 }
 
 // Export type for the API

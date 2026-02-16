@@ -20,11 +20,12 @@
  */
 
 import { useState, useRef, useEffect, KeyboardEvent, ClipboardEvent, DragEvent } from 'react'
-import { Plus, ImagePlus, Loader2, AlertCircle, Atom, Globe } from 'lucide-react'
+import { Plus, ImagePlus, Loader2, AlertCircle, Atom, Globe, Slash } from 'lucide-react'
 import { useOnboardingStore } from '../../stores/onboarding.store'
 import { useAIBrowserStore } from '../../stores/ai-browser.store'
 import { getOnboardingPrompt } from '../onboarding/onboardingData'
 import { ImageAttachmentPreview } from './ImageAttachmentPreview'
+import { SlashCommandsMenu } from './SlashCommandsMenu'
 import { processImage, isValidImageType, formatFileSize } from '../../utils/imageProcessor'
 import type { ImageAttachment } from '../../types'
 import { useTranslation } from '../../i18n'
@@ -57,6 +58,7 @@ export function InputArea({ onSend, onStop, isGenerating, placeholder, isCompact
   const [imageError, setImageError] = useState<ImageError | null>(null)
   const [thinkingEnabled, setThinkingEnabled] = useState(false)  // Extended thinking mode
   const [showAttachMenu, setShowAttachMenu] = useState(false)  // Attachment menu visibility
+  const [showSlashMenu, setShowSlashMenu] = useState(false)  // Slash commands menu visibility
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const attachMenuRef = useRef<HTMLDivElement>(null)
@@ -286,6 +288,19 @@ export function InputArea({ onSend, onStop, isGenerating, placeholder, isCompact
   const canSend = isOnboardingSendStep || ((content.trim().length > 0 || images.length > 0) && !isGenerating && !isProcessingImages)
   const hasImages = images.length > 0
 
+  // Handle slash command selection
+  const handleSlashCommandSelect = (command: string) => {
+    setContent(prev => {
+      // If there's existing content, add the command after a space
+      if (prev.trim()) {
+        return `${prev.trim()} ${command}`
+      }
+      return command
+    })
+    // Focus the textarea after inserting command
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
   return (
     <div className={`
       border-t border-border/50 bg-background/80 backdrop-blur-sm
@@ -395,6 +410,9 @@ export function InputArea({ onSend, onStop, isGenerating, placeholder, isCompact
             canSend={canSend}
             onSend={handleSend}
             onStop={onStop}
+            showSlashMenu={showSlashMenu}
+            onSlashMenuToggle={() => setShowSlashMenu(!showSlashMenu)}
+            onSlashCommandSelect={handleSlashCommandSelect}
           />
         </div>
       </div>
@@ -425,6 +443,9 @@ interface InputToolbarProps {
   canSend: boolean
   onSend: () => void
   onStop: () => void
+  showSlashMenu: boolean
+  onSlashMenuToggle: () => void
+  onSlashCommandSelect: (command: string) => void
 }
 
 function InputToolbar({
@@ -443,7 +464,10 @@ function InputToolbar({
   attachMenuRef,
   canSend,
   onSend,
-  onStop
+  onStop,
+  showSlashMenu,
+  onSlashMenuToggle,
+  onSlashCommandSelect
 }: InputToolbarProps) {
   const { t } = useTranslation()
   return (
@@ -536,6 +560,32 @@ function InputToolbar({
             <Atom size={15} />
             <span className="text-xs">{t('Deep Thinking')}</span>
           </button>
+        )}
+
+        {/* Slash commands menu */}
+        {!isGenerating && !isOnboarding && (
+          <div className="relative">
+            <button
+              onClick={onSlashMenuToggle}
+              className={`w-8 h-8 flex items-center justify-center rounded-lg
+                transition-all duration-150
+                ${showSlashMenu
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted/50'
+                }
+              `}
+              title={t('Slash commands')}
+            >
+              <Slash size={18} />
+            </button>
+
+            {/* Slash commands popup menu */}
+            <SlashCommandsMenu
+              isOpen={showSlashMenu}
+              onSelect={onSlashCommandSelect}
+              onClose={() => onSlashMenuToggle()}
+            />
+          </div>
         )}
       </div>
 

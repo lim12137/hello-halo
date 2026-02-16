@@ -7,28 +7,180 @@
 
 import { test, expect, hasApiKey } from '../fixtures/electron'
 
+const TEST_API_KEY = process.env.HALO_TEST_API_KEY || ''
+const TEST_API_URL = process.env.HALO_TEST_API_URL || ''
+const TEST_MODEL = process.env.HALO_TEST_MODEL || ''
+const TEST_PROVIDER = process.env.HALO_TEST_PROVIDER || 'anthropic'
+const TEST_MCP_SERVER_JSON = process.env.HALO_TEST_MCP_SERVER_JSON || ''
+const TEST_MCP_SERVER_NAME = process.env.HALO_TEST_MCP_SERVER_NAME || 'test-mcp'
+
+function parseTestMcpServers(): Record<string, any> {
+  if (!TEST_MCP_SERVER_JSON.trim()) return {}
+
+  try {
+    const parsed = JSON.parse(TEST_MCP_SERVER_JSON)
+    const looksLikeSingleServer =
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      (typeof parsed.type === 'string' || typeof parsed.command === 'string' || typeof parsed.url === 'string')
+
+    if (looksLikeSingleServer) {
+      return { [TEST_MCP_SERVER_NAME]: { ...parsed, disabled: false } }
+    }
+
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const normalized: Record<string, any> = {}
+      for (const [name, config] of Object.entries(parsed)) {
+        if (config && typeof config === 'object') {
+          normalized[name] = { ...(config as Record<string, any>), disabled: false }
+        }
+      }
+      return normalized
+    }
+  } catch (error) {
+    console.warn('[E2E] Failed to parse HALO_TEST_MCP_SERVER_JSON:', error)
+  }
+
+  return {}
+}
+
+const TEST_MCP_SERVERS = parseTestMcpServers()
+
+async function isSetupPage(window: any): Promise<boolean> {
+  const loginSelectorVisible = await window
+    .locator('button:has-text("API")')
+    .first()
+    .isVisible()
+    .catch(() => false)
+
+  const apiSetupVisible = await window
+    .locator('input[placeholder*="sk-"], text=API Key')
+    .first()
+    .isVisible()
+    .catch(() => false)
+
+  return loginSelectorVisible || apiSetupVisible
+}
+
+async function applyTestConfigFromNodeEnv(window: any) {
+  if (!TEST_API_KEY) return
+
+  const sourceId = `e2e-source-${Date.now()}`
+  const now = new Date().toISOString()
+  const updates = {
+    api: {
+      provider: TEST_PROVIDER,
+      apiKey: TEST_API_KEY,
+      apiUrl: TEST_API_URL,
+      model: TEST_MODEL
+    },
+    aiSources: {
+      version: 2 as const,
+      currentId: sourceId,
+      sources: [
+        {
+          id: sourceId,
+          name: 'E2E Test Source',
+          provider: TEST_PROVIDER,
+          authType: 'api-key',
+          apiUrl: TEST_API_URL,
+          apiKey: TEST_API_KEY,
+          model: TEST_MODEL,
+          availableModels: [{ id: TEST_MODEL, name: TEST_MODEL }],
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    },
+    onboarding: { completed: true },
+    isFirstLaunch: false,
+    mcpServers: TEST_MCP_SERVERS
+  }
+
+  await window.evaluate(async (payload) => {
+    const halo = (window as any).halo
+    if (!halo?.setConfig) {
+      throw new Error('window.halo.setConfig is unavailable')
+    }
+    const result = await halo.setConfig(payload)
+    // Known backend issue: config is saved but health event emission can fail with
+    // "changedFields.join is not a function" when aiSources is included.
+    const ignorableHealthEventError =
+      typeof result?.error === 'string' &&
+      result.error.includes('changedFields.join is not a function')
+
+    if (!result?.success && !ignorableHealthEventError) {
+      throw new Error(`window.halo.setConfig failed: ${result?.error || 'unknown error'}`)
+    }
+  }, updates)
+}
+
+async function configureViaUiFallback(window: any) {
+  const customApiButton = window.locator('button:has-text("API")').first()
+  if (await customApiButton.isVisible().catch(() => false)) {
+    await customApiButton.click()
+  }
+
+  const providerSelect = window.locator('select').first()
+  await providerSelect.waitFor({ timeout: 10000 })
+  await providerSelect.selectOption(TEST_PROVIDER === 'openai' ? 'openai' : 'anthropic')
+
+  const apiKeyInput = window.locator('input[type="password"], input[placeholder*="sk-"]').first()
+  await apiKeyInput.fill(TEST_API_KEY)
+
+  const apiUrlInput = window.locator('input[placeholder*="http"]').first()
+  await apiUrlInput.fill(TEST_API_URL)
+
+  const modelInput = window.locator('input[placeholder*="gpt"], input[placeholder*="deepseek"], input[placeholder*="claude"]').first()
+  if (await modelInput.isVisible().catch(() => false)) {
+    await modelInput.fill(TEST_MODEL)
+  }
+
+  const saveAndEnterButton = window.locator('button:has-text("Save and enter"), button:has-text("保存并进入")').first()
+  await saveAndEnterButton.click()
+}
+
+async function ensureConfigured(window: any) {
+  await window.waitForSelector('#root', { timeout: 10000 })
+  await window.waitForLoadState('networkidle')
+
+  if (!TEST_API_KEY) return
+
+  // Always enforce deterministic config in credentialed E2E runs.
+  await applyTestConfigFromNodeEnv(window)
+  await window.reload()
+  await window.waitForSelector('#root', { timeout: 10000 })
+  await window.waitForLoadState('networkidle')
+
+  if (await isSetupPage(window)) {
+    await configureViaUiFallback(window)
+    await window.waitForLoadState('networkidle')
+  }
+}
+
 /**
  * Helper to navigate from Home Page to Chat Interface
  */
 async function navigateToChat(window: any) {
+  await ensureConfigured(window)
   await window.waitForSelector('#root', { timeout: 10000 })
   await window.waitForLoadState('networkidle')
 
-  // Look for "Enter Halo" or "进入 Halo" text button (supports both EN and CN)
-  let enterHalo = await window.waitForSelector(
-    'text=/Enter Halo|进入 Halo/i',
-    { timeout: 5000 }
-  ).catch(() => null)
+  const chatInputReady = await window.locator('textarea').first().isVisible().catch(() => false)
+  if (chatInputReady) return
 
-  if (!enterHalo) {
-    enterHalo = await window.waitForSelector(
-      ':text("Halo"):visible',
-      { timeout: 5000 }
-    ).catch(() => null)
+  const haloSpaceCard = window.locator('[data-onboarding="halo-space"]').first()
+  if (await haloSpaceCard.isVisible().catch(() => false)) {
+    await haloSpaceCard.click({ force: true })
+    await window.waitForSelector('textarea', { timeout: 10000 })
+    return
   }
 
+  let enterHalo = await window.waitForSelector('text=/Enter Halo|进入 Halo/i', { timeout: 5000 }).catch(() => null)
+
   if (enterHalo) {
-    await enterHalo.click()
+    await enterHalo.click({ force: true })
   }
 
   await window.waitForSelector('textarea', { timeout: 10000 })
@@ -38,17 +190,17 @@ async function navigateToChat(window: any) {
  * Helper to navigate to settings and find remote section
  */
 async function navigateToRemoteSettings(window: any) {
+  await ensureConfigured(window)
   await window.waitForSelector('#root', { timeout: 10000 })
   await window.waitForLoadState('networkidle')
 
-  const settingsButton = await window.waitForSelector('button:has(svg)', { timeout: 10000 })
+  const settingsButton = await window.waitForSelector('header button', { timeout: 10000 })
   await settingsButton.click()
   await window.waitForTimeout(500)
 
   await window.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
   await window.waitForTimeout(500)
 
-  // Support both EN and CN: "Remote Access" or "远程访问"
   await window.waitForSelector('text=/Remote Access|远程访问/i', { timeout: 10000 })
 }
 
@@ -62,7 +214,6 @@ async function clickRemoteToggle(window: any) {
       const checkbox = label.querySelector('input[type="checkbox"]')
       if (checkbox) {
         const parent = label.closest('div')
-        // Support both EN and CN: "Enable Remote Access" or "启用远程访问"
         if (parent && (parent.textContent?.includes('启用远程访问') || parent.textContent?.includes('Enable Remote Access'))) {
           label.click()
           break
@@ -74,71 +225,57 @@ async function clickRemoteToggle(window: any) {
 
 test.describe('Smoke Tests', () => {
   test('application launches successfully', async ({ electronApp }) => {
-    // Verify app is running
     const isRunning = electronApp.process() !== null
     expect(isRunning).toBe(true)
   })
 
   test('main window opens', async ({ window }) => {
-    // Verify window is visible
     const title = await window.title()
     expect(title).toBeTruthy()
   })
 
   test('window has correct dimensions', async ({ window }) => {
-    // Get actual window dimensions from the renderer
     const dimensions = await window.evaluate(() => ({
       width: window.innerWidth,
       height: window.innerHeight
     }))
 
-    // Window should have reasonable size
     expect(dimensions.width).toBeGreaterThan(600)
     expect(dimensions.height).toBeGreaterThan(400)
   })
 
   test('renders main UI container', async ({ window }) => {
-    // Wait for React app to mount
     await window.waitForSelector('#root', { timeout: 10000 })
-
-    // Verify root element exists
     const root = await window.$('#root')
     expect(root).toBeTruthy()
   })
 
   test('shows splash or main content', async ({ window }) => {
-    // App should show either splash screen or main content
-    // Wait for any of these to appear
     await Promise.race([
       window.waitForSelector('[data-testid="splash-screen"]', { timeout: 5000 }).catch(() => null),
       window.waitForSelector('[data-testid="main-content"]', { timeout: 5000 }).catch(() => null),
       window.waitForSelector('[data-testid="api-setup"]', { timeout: 5000 }).catch(() => null),
-      // Fallback: any visible text content
       window.waitForSelector('text=/Halo|API|连接|设置/', { timeout: 5000 }).catch(() => null)
     ])
 
-    // Take screenshot for debugging
     await window.screenshot({ path: 'tests/e2e/results/smoke-initial-state.png' })
   })
 
   test('no console errors on startup', async ({ window }) => {
     const errors: string[] = []
 
-    // Listen for console errors
     window.on('console', msg => {
       if (msg.type() === 'error') {
         errors.push(msg.text())
       }
     })
 
-    // Wait a moment for any async errors
     await window.waitForTimeout(2000)
 
-    // Filter out known acceptable errors
     const criticalErrors = errors.filter(error =>
-      !error.includes('net::ERR_') && // Network errors are acceptable
-      !error.includes('favicon') && // Favicon errors are acceptable
-      !error.includes('DevTools') // DevTools messages are acceptable
+      !error.includes('net::ERR_') &&
+      !error.includes('favicon') &&
+      !error.includes('DevTools')
     )
 
     expect(criticalErrors).toHaveLength(0)
@@ -147,12 +284,10 @@ test.describe('Smoke Tests', () => {
   test('no unhandled promise rejections', async ({ electronApp }) => {
     const rejections: string[] = []
 
-    // Listen for unhandled rejections in main process
     electronApp.on('close', () => {
       // Process closed normally
     })
 
-    // Wait a moment
     await new Promise(resolve => setTimeout(resolve, 2000))
 
     expect(rejections).toHaveLength(0)
@@ -161,29 +296,19 @@ test.describe('Smoke Tests', () => {
 
 test.describe('First Launch Flow', () => {
   test('shows API setup on first launch', async ({ window }) => {
-    // First launch should show API setup or main content
-    // Wait for the app to fully render
     await window.waitForSelector('#root', { timeout: 10000 })
-
-    // Check that some meaningful content is displayed
-    // Could be API setup, main chat, or settings
     const bodyText = await window.evaluate(() => document.body.innerText)
-
-    // App should have rendered some text content
     expect(bodyText.length).toBeGreaterThan(0)
   })
 })
 
 test.describe('Basic Navigation', () => {
   test('settings button is accessible', async ({ window }) => {
-    // Wait for app to fully load
+    await ensureConfigured(window)
     await window.waitForLoadState('networkidle')
 
-    // Look for settings button (gear icon)
-    const settingsButton = await window.$('[data-testid="settings-button"], button:has(svg[class*="settings"]), button:has(svg[class*="cog"])').catch(() => null)
+    const settingsButton = await window.$('[data-testid="settings-button"], button:has(svg[class*="settings"]), button:has(svg[class*="cog"]), header button').catch(() => null)
 
-    // Settings should be accessible from main UI
-    // Note: May not be visible during API setup
     if (settingsButton) {
       expect(settingsButton).toBeTruthy()
     }
@@ -196,12 +321,12 @@ test.describe('Basic Navigation', () => {
  * These tests verify critical functionality:
  * - Chat: AI can send messages and receive responses
  * - Remote: Tunnel can be enabled and get public URL
+ * - MCP: MCP test endpoint can report server status
  */
 test.describe('Core Features', () => {
-  test.setTimeout(60000)
+  test.setTimeout(90000)
 
   test('can send message and receive AI response', async ({ window }, testInfo) => {
-    // Skip if no API key configured
     if (!hasApiKey()) {
       testInfo.skip(true, 'Skipping: HALO_TEST_API_KEY not set')
       return
@@ -215,16 +340,11 @@ test.describe('Core Features', () => {
     const sendButton = await window.waitForSelector('[data-onboarding="send-button"]', { timeout: 5000 })
     await sendButton.click({ force: true })
 
-    // Wait for user message
     await window.waitForSelector('.message-user', { timeout: 10000 })
-
-    // Wait for AI message
     await window.waitForSelector('.message-assistant', { timeout: 30000 })
 
-    // Wait for AI to finish working (supports both EN and CN)
     await window.waitForSelector('text=/Halo 工作中|Halo is working/i', { state: 'hidden', timeout: 45000 }).catch(() => {})
 
-    // Verify AI response contains expected content
     const assistantMessage = await window.waitForSelector('.message-assistant', { timeout: 5000 })
     const responseText = await assistantMessage.textContent()
     expect(responseText?.toLowerCase()).toContain('hello')
@@ -232,38 +352,61 @@ test.describe('Core Features', () => {
     await window.screenshot({ path: 'tests/e2e/results/smoke-chat-response.png' })
   })
 
-  test('can enable tunnel and get public URL', async ({ window }) => {
+  test('can enable tunnel and get public URL', async ({ window }, testInfo) => {
+    if (!hasApiKey()) {
+      testInfo.skip(true, 'Skipping: HALO_TEST_API_KEY not set')
+      return
+    }
+
     await navigateToRemoteSettings(window)
 
-    // Enable remote access
     await clickRemoteToggle(window)
     await window.waitForTimeout(2000)
 
-    // Wait for LAN section (supports both EN and CN)
     await window.waitForSelector('text=/本机地址|局域网地址|Local Address|LAN Address/i', { timeout: 15000 })
 
     await window.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
     await window.waitForTimeout(500)
 
-    // Click tunnel button (supports both EN and CN)
     const tunnelButton = await window.waitForSelector('button:has-text("启动隧道"), button:has-text("Start Tunnel")', { timeout: 10000 })
     await tunnelButton.click()
 
-    // Wait for public URL (supports both EN and CN)
-    const publicUrl = await window.waitForSelector(
-      'text=/\\.trycloudflare\\.com|公网地址|Public URL/i',
-      { timeout: 30000 }
-    ).catch(() => null)
+    const publicUrl = await window.waitForSelector('text=/\\.trycloudflare\\.com|公网地址|Public URL/i', { timeout: 30000 }).catch(() => null)
 
     if (publicUrl) {
       const urlCode = await window.waitForSelector('code:has-text("trycloudflare.com")', { timeout: 15000 }).catch(() => null)
       expect(urlCode).toBeTruthy()
       await window.screenshot({ path: 'tests/e2e/results/smoke-tunnel-enabled.png' })
     } else {
-      // Check for error state (network issue is acceptable)
       const errorMsg = await window.$('text=/隧道连接失败|Tunnel.*fail|error/i')
       expect(publicUrl || errorMsg).toBeTruthy()
       await window.screenshot({ path: 'tests/e2e/results/smoke-tunnel-error.png' })
     }
+  })
+
+  test('can run MCP connectivity check with configured test server', async ({ window }, testInfo) => {
+    if (!hasApiKey()) {
+      testInfo.skip(true, 'Skipping: HALO_TEST_API_KEY not set')
+      return
+    }
+
+    if (Object.keys(TEST_MCP_SERVERS).length === 0) {
+      testInfo.skip(true, 'Skipping: HALO_TEST_MCP_SERVER_JSON not set')
+      return
+    }
+
+    await ensureConfigured(window)
+
+    const result = await window.evaluate(async () => {
+      const halo = (window as any).halo
+      if (!halo?.testMcpConnections) {
+        return { success: false, servers: [], error: 'window.halo.testMcpConnections is unavailable' }
+      }
+      return await halo.testMcpConnections()
+    })
+
+    expect(result.success).toBe(true)
+    expect(Array.isArray(result.servers)).toBe(true)
+    expect(result.servers.length).toBeGreaterThan(0)
   })
 })

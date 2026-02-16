@@ -626,7 +626,18 @@ const browser_network_requests = tool(
   },
   async (args) => {
     try {
-      const requests = browserContext.getNetworkRequests(args.filter || {}, args.limit || 50)
+      const filter = args.filter || {}
+      const limit = args.limit || 50
+      const requests = browserContext
+        .getNetworkRequests(false)
+        .filter((req) => {
+          if (filter.url && !req.url.includes(filter.url)) return false
+          if (filter.method && req.method !== filter.method) return false
+          if (filter.resourceType && req.resourceType !== filter.resourceType) return false
+          if (filter.hasResponse === true && !req.status) return false
+          return true
+        })
+        .slice(-limit)
 
       if (requests.length === 0) {
         return {
@@ -662,7 +673,7 @@ const browser_network_request = tool(
   },
   async (args) => {
     try {
-      const requests = browserContext.getNetworkRequests({}, 100)
+      const requests = browserContext.getNetworkRequests(false).slice(-100)
 
       if (args.index < 0 || args.index >= requests.length) {
         return {
@@ -710,7 +721,12 @@ const browser_console = tool(
   },
   async (args) => {
     try {
-      const messages = browserContext.getConsoleMessages(args.level || 'all', args.limit || 50)
+      const level = args.level || 'all'
+      const limit = args.limit || 50
+      const messages = browserContext
+        .getConsoleMessages(false)
+        .filter(msg => level === 'all' || msg.type === level)
+        .slice(-limit)
 
       if (messages.length === 0) {
         return {
@@ -719,8 +735,8 @@ const browser_console = tool(
       }
 
       const lines = ['Console messages:']
-      messages.forEach((msg, index) => {
-        lines.push(`[${msg.level.toUpperCase()}] ${msg.text}`)
+      messages.forEach((msg) => {
+        lines.push(`[${msg.type.toUpperCase()}] ${msg.text}`)
       })
 
       return {
@@ -743,7 +759,7 @@ const browser_console_message = tool(
   },
   async (args) => {
     try {
-      const messages = browserContext.getConsoleMessages('all', 100)
+      const messages = browserContext.getConsoleMessages(false).slice(-100)
 
       if (args.index < 0 || args.index >= messages.length) {
         return {
@@ -754,11 +770,11 @@ const browser_console_message = tool(
 
       const msg = messages[args.index]
       const details = [
-        `Level: ${msg.level}`,
+        `Level: ${msg.type}`,
         `Text: ${msg.text}`,
-        `Source: ${msg.source || 'unknown'}`,
-        `Line: ${msg.line || 'unknown'}`,
-        `Column: ${msg.column || 'unknown'}`
+        `Source: ${msg.url || 'unknown'}`,
+        `Line: ${msg.lineNumber ?? 'unknown'}`,
+        `Column: unknown`
       ]
 
       return {

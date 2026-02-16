@@ -254,6 +254,18 @@ export function getCleanUserEnv(): Record<string, string | undefined> {
   return env
 }
 
+function resolveClaudeConfigDir(): string {
+  try {
+    return path.join(app.getPath('userData'), 'claude-config')
+  } catch (error) {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || process.cwd()
+    const haloDir = process.env.HALO_DATA_DIR || path.join(homeDir, '.halo')
+    const fallbackConfigDir = path.join(haloDir, 'claude-config')
+    console.warn('[SDK Config] app.getPath(\"userData\") failed, falling back CLAUDE_CONFIG_DIR:', fallbackConfigDir, error)
+    return fallbackConfigDir
+  }
+}
+
 /**
  * Build env for CC subprocess.
  * Inherits user env (PATH, HOME, SSH, proxy, etc.) for toolchain compat,
@@ -273,7 +285,7 @@ export function buildSdkEnv(params: SdkEnvParams): Record<string, string | numbe
 
     // Halo's own config dir (avoid conflicts with CC's ~/.claude)
     CLAUDE_CONFIG_DIR: (() => {
-      const configDir = path.join(app.getPath('userData'), 'claude-config')
+      const configDir = resolveClaudeConfigDir()
       ensureSandboxSettings(configDir)
       return configDir
     })(),

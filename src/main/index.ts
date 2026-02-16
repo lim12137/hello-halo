@@ -10,6 +10,9 @@
 // This replaces console.log/warn/error globally with electron-log
 // Logs are written to: ~/Library/Logs/Halo/ (macOS), %USERPROFILE%\AppData\Roaming\Halo\logs (Windows)
 import log from 'electron-log/main.js'
+import { existsSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 
 // Initialize for renderer process support (IPC transport)
 log.initialize()
@@ -48,6 +51,49 @@ Object.assign(console, log.functions)
 // Note: fix-path is ESM-only, loaded dynamically to support both CJS and ESM builds
 
 import { app, shell, BrowserWindow, Menu } from 'electron'
+
+function resolveHaloDataDirForDev(): string {
+  const raw = process.env.HALO_DATA_DIR
+  if (raw && raw.trim()) {
+    if (raw.startsWith('~')) {
+      return join(homedir(), raw.slice(1))
+    }
+    return raw
+  }
+  return join(homedir(), '.halo-dev')
+}
+
+function configureWindowsDevChromiumCachePaths(): void {
+  if (process.platform !== 'win32' || app.isPackaged) {
+    return
+  }
+
+  try {
+    const haloDataDir = resolveHaloDataDirForDev()
+    const chromiumSessionDir = join(haloDataDir, 'chromium-session')
+    const chromiumDiskCacheDir = join(chromiumSessionDir, 'Cache')
+    const chromiumMediaCacheDir = join(chromiumDiskCacheDir, 'Media')
+
+    if (!existsSync(chromiumMediaCacheDir)) {
+      mkdirSync(chromiumMediaCacheDir, { recursive: true })
+    }
+
+    // Keep app userData unchanged, only move Chromium runtime session/cache data.
+    app.setPath('sessionData', chromiumSessionDir)
+    app.commandLine.appendSwitch('disk-cache-dir', chromiumDiskCacheDir)
+    app.commandLine.appendSwitch('media-cache-dir', chromiumMediaCacheDir)
+
+    console.log('[Main] Windows dev Chromium cache path configured:', {
+      sessionData: chromiumSessionDir,
+      diskCache: chromiumDiskCacheDir,
+      mediaCache: chromiumMediaCacheDir,
+    })
+  } catch (error) {
+    console.warn('[Main] Failed to configure Windows dev Chromium cache path:', error)
+  }
+}
+
+configureWindowsDevChromiumCachePaths()
 
 // GPU compatibility: Disable hardware acceleration on Windows to prevent blank window issues
 // Some Windows GPU configurations cause the GPU process to crash, resulting in a white/blank screen
@@ -100,7 +146,6 @@ app.on('second-instance', () => {
   }
 })
 
-import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import {
   initializeEssentialServices,

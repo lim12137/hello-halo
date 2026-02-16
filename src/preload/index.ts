@@ -300,6 +300,16 @@ export interface HaloAPI {
   }>>
   onBootstrapExtendedReady: (callback: (data: { timestamp: number; duration: number }) => void) => () => void
 
+  // Skills
+  listSkills: (projectPath?: string) => Promise<IpcResponse<Array<{
+    name: string
+    description: string
+    source: 'builtin' | 'user' | 'project'
+    userInvocable: boolean
+    modelInvocation: boolean
+  }>>>
+  refreshSkills: () => Promise<IpcResponse>
+
   // Health System
   getHealthStatus: () => Promise<IpcResponse<HealthStatusResponse>>
   getHealthState: () => Promise<IpcResponse<HealthStateResponse>>
@@ -531,6 +541,10 @@ const api: HaloAPI = {
   // Bootstrap lifecycle
   getBootstrapStatus: () => ipcRenderer.invoke('bootstrap:get-status'),
   onBootstrapExtendedReady: (callback) => createEventListener('bootstrap:extended-ready', callback as (data: unknown) => void),
+
+  // Skills
+  listSkills: (projectPath) => ipcRenderer.invoke('skills:list', projectPath),
+  refreshSkills: () => ipcRenderer.invoke('skills:refresh'),
 
   // Health System
   getHealthStatus: () => ipcRenderer.invoke('health:get-status'),

@@ -298,9 +298,9 @@ export const performanceAnalyzeInsightTool: AIBrowserTool = {
  */
 async function getPerformanceMetrics(context: any): Promise<Record<string, number>> {
   try {
-    const result = await context.sendCDPCommand<{
+    const result = await context.sendCDPCommand('Performance.getMetrics') as {
       metrics: Array<{ name: string; value: number }>
-    }>('Performance.getMetrics')
+    }
 
     const metrics: Record<string, number> = {}
     for (const m of result.metrics) {

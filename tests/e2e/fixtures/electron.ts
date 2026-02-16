@@ -16,6 +16,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
+import os from 'os'
 import { fileURLToPath } from 'url'
 
 // ESM compatibility: __dirname is not available in ES modules
@@ -110,8 +111,15 @@ function ensureProductJson(projectRoot: string): void {
  * Without this symlink, SDK child processes fail with EPIPE error.
  */
 function createTestConfigDir(appPath: string): string {
+  const tmpBaseRaw =
+    process.env.TMPDIR ||
+    process.env.TEMP ||
+    process.env.TMP ||
+    os.tmpdir()
+  const tmpBase = path.isAbsolute(tmpBaseRaw) ? tmpBaseRaw : path.resolve(tmpBaseRaw)
+
   const testDir = path.join(
-    process.env.TMPDIR || '/tmp',
+    tmpBase,
     `halo-e2e-test-${Date.now()}`
   )
 

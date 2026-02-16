@@ -17,7 +17,7 @@
  *   await perfService.start()
  */
 
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, WebContentsView } from 'electron'
 import * as v8 from 'v8'
 import type {
   PerfConfig,
@@ -337,10 +337,11 @@ class PerformanceService {
     try {
       const windows = BrowserWindow.getAllWindows()
       for (const win of windows) {
-        const views = win.getBrowserViews()
-        count += views.length
-        // We don't have direct access to view IDs from here
-        // This would need integration with browserViewManager
+        const children = win.contentView.children || []
+        const viewCount = children.filter((child) => child instanceof WebContentsView).length
+        count += viewCount
+        // We don't have direct access to view IDs from here.
+        // This would need integration with browserViewManager.
       }
     } catch (e) {
       // Ignore errors

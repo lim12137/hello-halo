@@ -144,6 +144,10 @@ export interface SessionState {
   spaceId: string
   conversationId: string
   thoughts: Thought[]  // Backend accumulates thoughts (Single Source of Truth)
+  runtimeSession?: {
+    interrupt: () => Promise<boolean>
+    stream: () => AsyncIterable<any>
+  }
 }
 
 // ============================================

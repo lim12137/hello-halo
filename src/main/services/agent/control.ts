@@ -10,6 +10,12 @@
 
 import { activeSessions, v2Sessions } from './session-manager'
 import type { Thought } from './types'
+import { createSessionLikeFromV2 } from './session-like'
+
+function getMessageType(message: unknown): string {
+  const type = (message as { type?: unknown } | null)?.type
+  return typeof type === 'string' ? type : 'unknown'
+}
 
 // ============================================
 // Stop Generation
@@ -28,21 +34,31 @@ export async function stopGeneration(conversationId?: string): Promise<void> {
       session.abortController.abort()
       activeSessions.delete(conversationId)
 
-      // Interrupt V2 Session and drain stale messages
-      const v2Session = v2Sessions.get(conversationId)
-      if (v2Session) {
-        try {
-          await (v2Session.session as any).interrupt()
-          console.log(`[Agent] V2 session interrupted, draining stale messages...`)
+      // Interrupt runtime session and drain stale messages
+      const runtimeSession =
+        session.runtimeSession || (() => {
+          const v2Session = v2Sessions.get(conversationId)
+          return v2Session ? createSessionLikeFromV2(v2Session.session) : undefined
+        })()
 
-          // Drain stale messages until we hit the result
-          for await (const msg of v2Session.session.stream()) {
-            console.log(`[Agent] Drained: ${msg.type}`)
-            if (msg.type === 'result') break
+      if (runtimeSession) {
+        try {
+          const interrupted = await runtimeSession.interrupt()
+          if (interrupted) {
+            console.log(`[Agent] Session interrupted, draining stale messages...`)
+
+            // Drain stale messages until we hit the result
+            for await (const msg of runtimeSession.stream()) {
+              const messageType = getMessageType(msg)
+              console.log(`[Agent] Drained: ${messageType}`)
+              if (messageType === 'result') break
+            }
+            console.log(`[Agent] Drain complete for: ${conversationId}`)
+          } else {
+            console.warn(`[Agent] Session interrupt not available: ${conversationId}`)
           }
-          console.log(`[Agent] Drain complete for: ${conversationId}`)
         } catch (e) {
-          console.error(`[Agent] Failed to interrupt/drain V2 session:`, e)
+          console.error(`[Agent] Failed to interrupt/drain session:`, e)
         }
       }
 
@@ -53,13 +69,20 @@ export async function stopGeneration(conversationId?: string): Promise<void> {
     for (const [convId, session] of Array.from(activeSessions)) {
       session.abortController.abort()
 
-      // Interrupt V2 Session
-      const v2Session = v2Sessions.get(convId)
-      if (v2Session) {
+      // Interrupt runtime session
+      const runtimeSession =
+        session.runtimeSession || (() => {
+          const v2Session = v2Sessions.get(convId)
+          return v2Session ? createSessionLikeFromV2(v2Session.session) : undefined
+        })()
+      if (runtimeSession) {
         try {
-          await (v2Session.session as any).interrupt()
+          const interrupted = await runtimeSession.interrupt()
+          if (!interrupted) {
+            console.warn(`[Agent] Session interrupt not available: ${convId}`)
+          }
         } catch (e) {
-          console.error(`[Agent] Failed to interrupt V2 session ${convId}:`, e)
+          console.error(`[Agent] Failed to interrupt session ${convId}:`, e)
         }
       }
 

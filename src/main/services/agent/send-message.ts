@@ -23,6 +23,7 @@ import type {
   ToolCall,
   Thought,
   SessionConfig,
+  SessionState,
   TokenUsage,
   SingleCallUsage
 } from './types'
@@ -53,6 +54,12 @@ import {
 } from './message-utils'
 import { onAgentError, runPpidScanAndCleanup } from '../health'
 import { resolveCredentialsForSdk, buildBaseSdkOptions } from './sdk-config'
+import { updateRuntimeBuiltinCommands } from '../skills.service'
+import {
+  createSessionLikeFromV2,
+  createSessionLikeFromQueryOptions,
+  type SessionLike
+} from './session-like'
 
 // Unified fallback error suffix - guides user to check logs
 const FALLBACK_ERROR_HINT = 'Check logs in Settings > System > Logs.'
@@ -93,6 +100,7 @@ export async function sendMessage(
 
   const config = getConfig()
   const workDir = getWorkingDir(spaceId)
+  const useV1QuerySession = process.env.HALO_EXPERIMENTAL_QUERY_SESSION === '1'
 
   // Get API credentials and resolve for SDK use
   const credentials = await getApiCredentials(config)
@@ -172,7 +180,9 @@ export async function sendMessage(
     }
 
     const t0 = Date.now()
-    console.log(`[Agent][${conversationId}] Getting or creating V2 session...`)
+    console.log(
+      `[Agent][${conversationId}] Preparing session (${useV1QuerySession ? 'v1-query' : 'v2-session'})...`
+    )
 
     // Log MCP servers if configured (only enabled ones)
     const mcpServerNames = enabledMcpServers ? Object.keys(enabledMcpServers) : []
@@ -180,41 +190,62 @@ export async function sendMessage(
       console.log(`[Agent][${conversationId}] MCP servers configured: ${mcpServerNames.join(', ')}`)
     }
 
-    // Session config for rebuild detection
-    const sessionConfig: SessionConfig = {
-      aiBrowserEnabled: !!aiBrowserEnabled
+    let sessionLike: SessionLike
+    if (useV1QuerySession) {
+      // V1 query path: use resume directly from options when available.
+      if (sessionId) {
+        sdkOptions.resume = sessionId
+        console.log(`[Agent][${conversationId}] V1 query resume: ${sessionId}`)
+      }
+      sessionLike = createSessionLikeFromQueryOptions(sdkOptions)
+    } else {
+      // Session config for rebuild detection (V2 path)
+      const sessionConfig: SessionConfig = {
+        aiBrowserEnabled: !!aiBrowserEnabled
+      }
+
+      // Get or create persistent V2 session for this conversation
+      // Pass config for rebuild detection when aiBrowserEnabled changes
+      // Pass workDir for session migration support (from old ~/.claude to new config dir)
+      const v2Session = await getOrCreateV2Session(
+        spaceId,
+        conversationId,
+        sdkOptions,
+        sessionId,
+        sessionConfig,
+        workDir
+      )
+      sessionLike = createSessionLikeFromV2(v2Session)
     }
+    sessionState.runtimeSession = sessionLike
 
-    // Get or create persistent V2 session for this conversation
-    // Pass config for rebuild detection when aiBrowserEnabled changes
-    // Pass workDir for session migration support (from old ~/.claude to new config dir)
-    const v2Session = await getOrCreateV2Session(spaceId, conversationId, sdkOptions, sessionId, sessionConfig, workDir)
-
-    // Dynamic runtime parameter adjustment (via SDK patch)
+    // Dynamic runtime parameter adjustment (SDK optional capabilities)
     // Note: Model switching is handled by session rebuild (model change triggers
     // credentialsGeneration bump in config.service). setModel is kept for SDK
     // compatibility but is not effective for actual model routing when all providers
     // route through the OpenAI compat router (model is baked into ANTHROPIC_API_KEY).
     try {
-      // Set model in SDK (informational; actual model determined by session credentials)
-      if (v2Session.setModel) {
-        await v2Session.setModel(resolvedCredentials.sdkModel)
+      const runtimeApplyResult = await sessionLike.applyRuntimeOptions({
+        model: resolvedCredentials.sdkModel,
+        maxThinkingTokens: thinkingEnabled ? 10240 : null
+      })
+      if (runtimeApplyResult.modelApplied) {
         console.log(`[Agent][${conversationId}] Model set: ${resolvedCredentials.sdkModel}`)
       }
-
-      // Set thinking tokens dynamically
-      if (v2Session.setMaxThinkingTokens) {
-        await v2Session.setMaxThinkingTokens(thinkingEnabled ? 10240 : null)
+      if (runtimeApplyResult.maxThinkingTokensApplied) {
         console.log(`[Agent][${conversationId}] Thinking mode: ${thinkingEnabled ? 'ON (10240 tokens)' : 'OFF'}`)
       }
     } catch (e) {
       console.error(`[Agent][${conversationId}] Failed to set dynamic params:`, e)
     }
-    console.log(`[Agent][${conversationId}] ⏱️ V2 session ready: ${Date.now() - t0}ms`)
+    const capabilities = sessionLike.getCapabilities()
+    console.log(
+      `[Agent][${conversationId}] Session ready (${useV1QuerySession ? 'v1-query' : 'v2-session'}): ${Date.now() - t0}ms, capabilities=${JSON.stringify(capabilities)}`
+    )
 
     // Process the stream
     await processMessageStream(
-      v2Session,
+      sessionLike,
       sessionState,
       spaceId,
       conversationId,
@@ -253,16 +284,21 @@ export async function sendMessage(
                           errorMessage.includes('ENOENT')
 
       if (isExitCode1 || isBashError) {
-        // Check if Git Bash is properly configured
-        const { detectGitBash } = require('../git-bash.service')
-        const gitBashStatus = detectGitBash()
+        try {
+          // Check if Git Bash is properly configured
+          const { detectGitBash } = require('../git-bash.service')
+          const gitBashStatus = detectGitBash()
 
-        if (!gitBashStatus.found) {
-          errorMessage = 'Command execution environment not installed. Please restart the app and complete setup, or install manually in settings.'
-        } else {
-          // Git Bash found but still got error - could be path issue
-          errorMessage = 'Command execution failed. This may be an environment configuration issue, please try restarting the app.\n\n' +
-                        `Technical details: ${err.message}`
+          if (!gitBashStatus.found) {
+            errorMessage = 'Command execution environment not installed. Please restart the app and complete setup, or install manually in settings.'
+          } else {
+            // Git Bash found but still got error - could be path issue
+            errorMessage = 'Command execution failed. This may be an environment configuration issue, please try restarting the app.\n\n' +
+                          `Technical details: ${err.message}`
+          }
+        } catch (detectError) {
+          // Keep original error message if environment diagnosis itself fails.
+          console.warn(`[Agent][${conversationId}] Git Bash detection failed while handling error:`, detectError)
         }
       }
     }
@@ -298,7 +334,9 @@ export async function sendMessage(
     })
 
     // Close V2 session on error (it may be in a bad state)
-    closeV2Session(conversationId)
+    if (!useV1QuerySession) {
+      closeV2Session(conversationId)
+    }
   } finally {
     // Clean up active session state (but keep V2 session for reuse)
     unregisterActiveSession(conversationId)
@@ -314,8 +352,8 @@ export async function sendMessage(
  * Process the message stream from V2 session
  */
 async function processMessageStream(
-  v2Session: any,
-  sessionState: any,
+  session: SessionLike,
+  sessionState: SessionState,
   spaceId: string,
   conversationId: string,
   message: string,
@@ -375,7 +413,7 @@ async function processMessageStream(
   // Send message to V2 session and stream response
   // For multi-modal messages, we need to send as SDKUserMessage
   if (typeof messageContent === 'string') {
-    v2Session.send(messageContent)
+    session.send(messageContent)
   } else {
     // Multi-modal message: construct SDKUserMessage
     const userMessage = {
@@ -385,11 +423,11 @@ async function processMessageStream(
         content: messageContent
       }
     }
-    v2Session.send(userMessage as any)
+    session.send(userMessage)
   }
 
   // Stream messages from V2 session
-  for await (const sdkMessage of v2Session.stream()) {
+  for await (const sdkMessage of session.stream()) {
     // Handle abort - check this session's controller
     if (abortController.signal.aborted) {
       console.log(`[Agent][${conversationId}] Aborted`)
@@ -773,6 +811,14 @@ async function processMessageStream(
       if (sessionIdFromMsg) {
         capturedSessionId = sessionIdFromMsg as string
         console.log(`[Agent][${conversationId}] Captured session ID:`, capturedSessionId)
+      }
+
+      // Sync runtime slash commands from SDK init payload.
+      const slashCommands = msg.slash_commands
+      if (Array.isArray(slashCommands) && slashCommands.length > 0) {
+        updateRuntimeBuiltinCommands(
+          slashCommands.filter((cmd): cmd is string => typeof cmd === 'string')
+        )
       }
 
       // Handle compact_boundary - context compression notification

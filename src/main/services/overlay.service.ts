@@ -1,19 +1,19 @@
 /**
- * Overlay Service - Manages the overlay BrowserView
+ * Overlay Service - Manages the overlay WebContentsView
  *
- * This service creates and manages a dedicated BrowserView that renders
- * above all other views (including other BrowserViews) to display floating UI elements.
+ * This service creates and manages a dedicated WebContentsView that renders
+ * above all other views (including other WebContentsViews) to display floating UI elements.
  *
  * Architecture:
  * - Pre-renders an overlay SPA at startup
  * - Shows/hides by changing bounds (width: 0 = hidden)
  * - Communicates with overlay via IPC
  *
- * Note: Using BrowserView instead of WebContentsView for Electron 28 compatibility.
- * BrowserView order is determined by add order - later added views appear on top.
+ * Note: Using WebContentsView (Electron 30+) instead of deprecated BrowserView.
+ * WebContentsView order is determined by add order - later added views appear on top.
  */
 
-import { BrowserView, BrowserWindow, ipcMain } from 'electron'
+import { WebContentsView, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
@@ -41,7 +41,7 @@ export interface OverlayBounds {
 
 class OverlayManager {
   private mainWindow: BrowserWindow | null = null
-  private overlayView: BrowserView | null = null
+  private overlayView: WebContentsView | null = null
   private currentState: OverlayState = {
     showChatCapsule: false,
   }
@@ -74,7 +74,7 @@ class OverlayManager {
   }
 
   /**
-   * Lazily initialize the overlay BrowserView
+   * Lazily initialize the overlay WebContentsView
    * Called on first showChatCapsule() to avoid startup overhead
    */
   private async lazyInitialize(): Promise<void> {
@@ -105,16 +105,16 @@ class OverlayManager {
   }
 
   /**
-   * Actually create and initialize the overlay BrowserView
+   * Actually create and initialize the overlay WebContentsView
    */
   private async doInitialize(): Promise<void> {
     if (!this.mainWindow) return
 
-    console.log('[Overlay] Lazy initializing overlay BrowserView...')
+    console.log('[Overlay] Lazy initializing overlay WebContentsView...')
     const startTime = Date.now()
 
-    // Create the overlay BrowserView
-    this.overlayView = new BrowserView({
+    // Create the overlay WebContentsView
+    this.overlayView = new WebContentsView({
       webPreferences: {
         preload: join(__dirname, '../preload/index.mjs'),
         sandbox: false,
@@ -134,10 +134,10 @@ class OverlayManager {
       console.error('[Overlay] Failed to load:', { errorCode, errorDescription, validatedURL })
     })
 
-    // IMPORTANT: Add the BrowserView to window BEFORE loading
+    // IMPORTANT: Add the WebContentsView to window BEFORE loading
     // This ensures JavaScript can execute properly
     // Use offscreen bounds during loading to keep it invisible but allow proper initialization
-    this.mainWindow.addBrowserView(this.overlayView)
+    this.mainWindow.contentView.addChildView(this.overlayView)
     this.isAttached = true
 
     // Get window size for initial bounds (offscreen but full size for proper rendering)
@@ -205,7 +205,7 @@ class OverlayManager {
 
     // Remove from window until needed (but keep the view alive)
     try {
-      this.mainWindow.removeBrowserView(this.overlayView)
+      this.mainWindow.contentView.removeChildView(this.overlayView)
     } catch (e) {
       // Ignore
     }
@@ -266,17 +266,17 @@ class OverlayManager {
 
     this.currentState.showChatCapsule = true
 
-    // Always remove and re-add to ensure overlay is on top of all other BrowserViews
-    // BrowserView z-order is determined by add order - later added views appear on top
+    // Always remove and re-add to ensure overlay is on top of all other WebContentsViews
+    // WebContentsView z-order is determined by add order - later added views appear on top
     if (this.isAttached) {
       try {
-        this.mainWindow.removeBrowserView(this.overlayView)
+        this.mainWindow.contentView.removeChildView(this.overlayView)
       } catch (e) {
         // Ignore
       }
     }
 
-    this.mainWindow.addBrowserView(this.overlayView)
+    this.mainWindow.contentView.addChildView(this.overlayView)
     this.isAttached = true
 
     // Update bounds to cover the capsule area (left side)
@@ -300,7 +300,7 @@ class OverlayManager {
     // Remove from window to ensure it doesn't block clicks
     if (this.isAttached) {
       try {
-        this.mainWindow.removeBrowserView(this.overlayView)
+        this.mainWindow.contentView.removeChildView(this.overlayView)
       } catch (e) {
         // Already removed
       }
@@ -359,7 +359,7 @@ class OverlayManager {
 
     if (this.overlayView && this.mainWindow && this.isAttached) {
       try {
-        this.mainWindow.removeBrowserView(this.overlayView)
+        this.mainWindow.contentView.removeChildView(this.overlayView)
       } catch (e) {
         // Already removed
       }

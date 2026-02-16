@@ -12,13 +12,13 @@
  * Uses the same SDK pattern as the agent module (session-manager.ts)
  */
 
-import { unstable_v2_createSession } from '@anthropic-ai/claude-agent-sdk'
 import { app } from 'electron'
 import { ensureOpenAICompatRouter, encodeBackendConfig, normalizeApiUrl } from '../openai-compat-router'
 import type { BackendConfig } from '../openai-compat-router'
 import { getCleanUserEnv } from './agent/sdk-config'
 import { AVAILABLE_MODELS } from '../../shared/types/ai-sources'
 import { getHeadlessElectronPath } from './agent/helpers'
+import { createV2SdkSession, closeSession } from './agent/sdk-adapter'
 
 // Re-export normalizeApiUrl for external use (moved to router module)
 export { normalizeApiUrl } from '../openai-compat-router'
@@ -118,7 +118,7 @@ export async function validateApiConnection(params: ValidateApiParams): Promise<
     }
 
     console.log('[API Validator] Creating SDK session for validation...')
-    const session = await unstable_v2_createSession(sdkOptions as any) as any
+    const session = await createV2SdkSession(sdkOptions as any)
 
     // Step 6: Send test message using correct SDK pattern: send() + stream()
     console.log('[API Validator] Sending test message...')
@@ -154,7 +154,7 @@ export async function validateApiConnection(params: ValidateApiParams): Promise<
     // Step 8: Close session
     clearTimeout(timeoutId)
     try {
-      session.close()
+      closeSession(session)
     } catch {
       // Ignore close errors
     }

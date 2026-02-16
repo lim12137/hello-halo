@@ -13,7 +13,7 @@
  * - AI-ready (screenshot capture, JS execution)
  */
 
-import { BrowserView, BrowserWindow } from 'electron'
+import { WebContentsView, BrowserWindow } from 'electron'
 
 // ============================================
 // Types
@@ -52,10 +52,11 @@ const CHROME_USER_AGENT =
 // ============================================
 
 class BrowserViewManager {
-  private views: Map<string, BrowserView> = new Map()
+  private views: Map<string, WebContentsView> = new Map()
   private states: Map<string, BrowserViewState> = new Map()
   private mainWindow: BrowserWindow | null = null
   private activeViewId: string | null = null
+  private resizeHandlers: Map<string, () => void> = new Map()
 
   // Debounce timers for state change events
   // This prevents flooding the renderer with too many IPC messages during rapid navigation
@@ -86,8 +87,8 @@ class BrowserViewManager {
       return this.states.get(viewId)!
     }
 
-    console.log(`[BrowserView] Creating new BrowserView...`)
-    const view = new BrowserView({
+    console.log(`[BrowserView] Creating new WebContentsView...`)
+    const view = new WebContentsView({
       webPreferences: {
         sandbox: true, // Security: enable sandbox for external content
         contextIsolation: true,
@@ -100,7 +101,7 @@ class BrowserViewManager {
         scrollBounce: true,
       },
     })
-    console.log(`[BrowserView] BrowserView instance created`)
+    console.log(`[BrowserView] WebContentsView instance created`)
 
     // Set Chrome User-Agent to avoid detection
     view.webContents.setUserAgent(CHROME_USER_AGENT)
@@ -168,27 +169,18 @@ class BrowserViewManager {
     }
 
     // Add to window
-    console.log(`[BrowserView] Adding BrowserView to window...`)
-    this.mainWindow.addBrowserView(view)
-    console.log(`[BrowserView] BrowserView added to window`)
+    console.log(`[BrowserView] Adding WebContentsView to window...`)
+    this.mainWindow.contentView.addChildView(view)
+    console.log(`[BrowserView] WebContentsView added to window`)
 
-    // Set bounds with integer values
-    const intBounds = {
-      x: Math.round(bounds.x),
-      y: Math.round(bounds.y),
-      width: Math.round(bounds.width),
-      height: Math.round(bounds.height),
-    }
+    // Set initial bounds
+    const intBounds = this.calculateBounds(bounds)
     console.log(`[BrowserView] Setting bounds:`, intBounds)
     view.setBounds(intBounds)
 
-    // Auto-resize with window (only width and height, not position)
-    view.setAutoResize({
-      width: false,
-      height: false,
-      horizontal: false,
-      vertical: false,
-    })
+    // WebContentsView does not support setAutoResize like BrowserView.
+    // Keep a window resize listener to recompute bounds.
+    this.setupAutoResize(viewId, view, bounds)
 
     this.activeViewId = viewId
     console.log(`[BrowserView] <<< show() success - activeViewId: ${this.activeViewId}`)
@@ -202,8 +194,10 @@ class BrowserViewManager {
     const view = this.views.get(viewId)
     if (!view || !this.mainWindow) return false
 
+    this.cleanupResizeHandler(viewId)
+
     try {
-      this.mainWindow.removeBrowserView(view)
+      this.mainWindow.contentView.removeChildView(view)
     } catch (e) {
       // View might already be removed
     }
@@ -222,14 +216,64 @@ class BrowserViewManager {
     const view = this.views.get(viewId)
     if (!view) return false
 
-    view.setBounds({
-      x: Math.round(bounds.x),
-      y: Math.round(bounds.y),
-      width: Math.round(bounds.width),
-      height: Math.round(bounds.height),
-    })
+    const intBounds = this.calculateBounds(bounds)
+    view.setBounds(intBounds)
+    this.setupAutoResize(viewId, view, bounds)
 
     return true
+  }
+
+  /**
+   * Calculate effective bounds from relative bounds.
+   * width/height = -1 means "fill remaining window space".
+   */
+  private calculateBounds(bounds: BrowserViewBounds) {
+    const x = Math.round(bounds.x)
+    const y = Math.round(bounds.y)
+
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) {
+      return {
+        x,
+        y,
+        width: Math.max(0, Math.round(bounds.width)),
+        height: Math.max(0, Math.round(bounds.height)),
+      }
+    }
+
+    const [winWidth, winHeight] = this.mainWindow.getContentSize()
+    const width = bounds.width === -1 ? winWidth - x : bounds.width
+    const height = bounds.height === -1 ? winHeight - y : bounds.height
+
+    return {
+      x,
+      y,
+      width: Math.max(0, Math.round(width)),
+      height: Math.max(0, Math.round(height)),
+    }
+  }
+
+  private setupAutoResize(viewId: string, view: WebContentsView, relativeBounds: BrowserViewBounds) {
+    this.cleanupResizeHandler(viewId)
+
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    const handler = () => {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+      view.setBounds(this.calculateBounds(relativeBounds))
+    }
+
+    this.mainWindow.on('resize', handler)
+    this.resizeHandlers.set(viewId, handler)
+  }
+
+  private cleanupResizeHandler(viewId: string) {
+    const handler = this.resizeHandlers.get(viewId)
+    if (!handler) return
+
+    if (this.mainWindow) {
+      this.mainWindow.removeListener('resize', handler)
+    }
+    this.resizeHandlers.delete(viewId)
   }
 
   /**
@@ -399,6 +443,8 @@ class BrowserViewManager {
     const view = this.views.get(viewId)
     if (!view) return
 
+    this.cleanupResizeHandler(viewId)
+
     // Clear any pending debounce timer for this view
     const timer = this.stateChangeDebounceTimers.get(viewId)
     if (timer) {
@@ -409,7 +455,7 @@ class BrowserViewManager {
     // Remove from window
     if (this.mainWindow) {
       try {
-        this.mainWindow.removeBrowserView(view)
+        this.mainWindow.contentView.removeChildView(view)
       } catch (e) {
         // Already removed
       }
@@ -449,7 +495,7 @@ class BrowserViewManager {
   /**
    * Bind WebContents events
    */
-  private bindEvents(viewId: string, view: BrowserView) {
+  private bindEvents(viewId: string, view: WebContentsView) {
     const wc = view.webContents
 
     // Navigation start - immediate emit for responsive UI feedback

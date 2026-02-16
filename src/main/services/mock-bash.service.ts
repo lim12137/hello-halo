@@ -9,6 +9,7 @@
 import { join } from 'path'
 import { app } from 'electron'
 import { existsSync, writeFileSync, mkdirSync } from 'fs'
+import { getHaloDir } from './config.service'
 
 // Marker to identify mock bash in path
 const MOCK_BASH_MARKER = 'mock-bash'
@@ -26,7 +27,7 @@ const MOCK_BASH_MARKER = 'mock-bash'
  * @returns Path to the mock bash.cmd
  */
 export function createMockBash(): string {
-  const mockDir = join(app.getPath('userData'), MOCK_BASH_MARKER, 'bin')
+  const mockDir = join(getSafeUserDataPath(), MOCK_BASH_MARKER, 'bin')
   const mockBashPath = join(mockDir, 'bash.cmd')  // Use .cmd directly
 
   // Always recreate to ensure latest message format
@@ -91,7 +92,7 @@ export function getMockBashErrorMessage(): string {
  * Get the mock bash directory path
  */
 export function getMockBashDir(): string {
-  return join(app.getPath('userData'), MOCK_BASH_MARKER)
+  return join(getSafeUserDataPath(), MOCK_BASH_MARKER)
 }
 
 /**
@@ -107,5 +108,15 @@ export function cleanupMockBash(): void {
     } catch (e) {
       console.error('[MockBash] Failed to cleanup:', e)
     }
+  }
+}
+
+function getSafeUserDataPath(): string {
+  try {
+    return app.getPath('userData')
+  } catch (error) {
+    const fallback = join(getHaloDir(), 'user-data')
+    console.warn('[MockBash] Failed to resolve app userData path, using fallback:', fallback, error)
+    return fallback
   }
 }
