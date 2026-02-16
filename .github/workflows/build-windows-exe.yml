@@ -22,6 +22,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare product.json
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "product.json")) {
+            if (Test-Path "product.example.json") {
+              Copy-Item "product.example.json" "product.json"
+              Write-Host "Created product.json from product.example.json"
+            } else {
+              throw "product.json and product.example.json are both missing"
+            }
+          } else {
+            Write-Host "product.json already exists"
+          }
+
       - name: Build Windows x64 installer
         run: npm run build:win-x64
 
